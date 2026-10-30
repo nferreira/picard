@@ -1,0 +1,102 @@
+name: pipeline extra
+description: >-
+  Run one named extra job from a plan: secrets, workflow-lint, dependency-review, semgrep,
+  link-check or breaking-change-checks. The caller must have checked out the repository
+  with fetch-depth 0.
+
+inputs:
+  name:
+    description: The extra to run.
+    required: true
+  base:
+    description: Base commit, to scope the secret scan to the change. Empty scans everything.
+    default: ""
+  head:
+    description: Head commit.
+    default: ""
+  body:
+    description: PR body (breaking-change-checks).
+    default: ""
+  gitleaks-image:
+    description: Pinned gitleaks image. Verify the tag and bump it with your image policy.
+    default: zricethezav/gitleaks:v8.18.4
+  semgrep-image:
+    description: Pinned semgrep image. Skip this extra if the org Security Scan already runs semgrep.
+    default: semgrep/semgrep:1.90.0
+  semgrep-config:
+    description: Semgrep ruleset.
+    default: p/default
+  actionlint-image:
+    description: Pinned actionlint image.
+    default: rhysd/actionlint:1.7.7
+  link-check-args:
+    description: Arguments for lychee. The default checks local links only, so PRs never flake on the network.
+    default: --no-progress --offline **/*.md
+
+runs:
+  using: composite
+  steps:
+    - if: inputs.name == 'secrets'
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.gitleaks-image }}
+        BASE: ${{ inputs.base }}
+        HEAD: ${{ inputs.head }}
+      run: |
+        range=()
+        if [ -n "$BASE" ] && [ -n "$HEAD" ]; then range=(--log-opts "$BASE..$HEAD"); fi
+        docker run --rm \
+          -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
+          -v "$PWD:/repo" "$IMAGE" detect --source /repo --redact --no-banner "${range[@]}"
+
+    - if: inputs.name == 'workflow-lint'
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.actionlint-image }}
+      run: docker run --rm -v "$PWD:/repo" -w /repo "$IMAGE" -color
+
+    - if: inputs.name == 'semgrep'
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.semgrep-image }}
+        CONFIG: ${{ inputs.semgrep-config }}
+      run: |
+        docker run --rm -v "$PWD:/src" -w /src "$IMAGE" \
+          semgrep scan --config "$CONFIG" --error --metrics=off
+
+    - if: inputs.name == 'dependency-review'
+      uses: actions/dependency-review-action@v4
+      with:
+        fail-on-severity: high
+
+    - if: inputs.name == 'link-check'
+      uses: lycheeverse/lychee-action@v2
+      with:
+        args: ${{ inputs.link-check-args }}
+        fail: true
+
+    - if: inputs.name == 'breaking-change-checks'
+      shell: bash
+      env:
+        BODY: ${{ inputs.body }}
+      run: |
+        # A breaking change must explain itself: a footer and a migration section.
+        ok=true
+        if ! grep -Eiq '^#{1,4}[[:space:]]*migration' <<<"$BODY"; then
+          echo "::error::Breaking change: add a '## Migration' section to the PR description."
+          ok=false
+        fi
+        if ! grep -Eq '^BREAKING[ -]CHANGE: .{20,}' <<<"$BODY"; then
+          echo "::error::Breaking change: add a 'BREAKING CHANGE: <what breaks and why>' footer (20+ characters)."
+          ok=false
+        fi
+        [ "$ok" = true ]
+
+    - if: >-
+        !contains(fromJSON('["secrets","workflow-lint","semgrep","dependency-review","link-check","breaking-change-checks"]'), inputs.name)
+      shell: bash
+      env:
+        NAME: ${{ inputs.name }}
+      run: |
+        echo "::error::Unknown extra '$NAME'"
+        exit 1

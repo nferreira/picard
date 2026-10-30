@@ -1,0 +1,196 @@
+# Architecture
+
+picard is an [affected-based, change-based, incremental](concepts.md) CI/CD tool with six
+tiers. This page is how it is put together.
+
+## Flow
+
+```
+                        ┌─────────────────────────────────────┐
+ PR title / body ──────▶│                                     │
+ changed files ────────▶│  picard                              │──▶ plan (JSON)
+ tier number ──────────▶│  + .pipeline/pipeline.toml          │
+                        └─────────────────────────────────────┘
+                                                                  │
+        ┌─────────────┬─────────────┬──────────────┬──────────────┴┬────────────┐
+        ▼             ▼             ▼              ▼               ▼            ▼
+   tier 0 hook   tier 1 fast    tier 2        tier 3 merge     tier 4        tier 5
+   (local)       gate (matrix)  baseline      queue (all)      nightly       Release Please
+                        └──────────┬──────────┘                                  │
+                             pipeline-gate                                  tag + GitHub Release
+```
+
+## Where things live
+
+picard is a Python package with a `picard` command. A host repo installs it, runs `picard
+init`, and gets only the files it has to own.
+
+**This repository** (the tool):
+
+```
+src/picard/                      the planner (Python 3.11+, standard library only)
+  graph/providers/                 read the package graph from manifests
+  graph/engines/                   decide what a change affects
+  executors/                       build the command for one suite
+  scaffold.py                      picard init / update / install-hooks
+  templates/                       package data that `picard init` copies into a host
+    github/                          workflows, actions, release-please, CODEOWNERS, ...
+    hooks/                           commit-msg, pre-push
+    pytest/conftest.py               marker plugin to copy into a test root
+    pipeline.toml                    the starter config
+tests/                           tests of the tool
+docs/                            this documentation
+pyproject.toml, justfile         build, dev tools and tasks
+.github/workflows/ci.yml         picard's own CI (not the templates above)
+```
+
+**A host repository** after `picard init`. Everything is under `.github/` and `.pipeline/`,
+and every file picard owns is prefixed `pipeline-` or sits in a picard-owned folder:
+
+```
+.github/workflows/pipeline-*.yml     one workflow per tier (and the rc tag), replaced on update
+.github/actions/pipeline-*/          composite actions the workflows call, replaced on update
+.github/release-please/, CODEOWNERS, dependabot.yaml, pull_request_template.md   yours after init
+.pipeline/pipeline.toml              the one file a repo edits (yours after init)
+.pipeline/hooks/                     commit-msg, pre-push, replaced on update
+.pipeline/templates/pytest/          marker plugin to copy into a test root, replaced on update
+```
+
+The host holds no picard code. CI installs a pinned picard in `pipeline-setup-picard`
+(`PICARD_REPOSITORY`, `PICARD_REF`, `PICARD_TOKEN`), and a developer installs it once with
+`uv tool install --editable <clone>`. See [ADR 0006](adr/0006-picard-is-a-python-package.md).
+
+## Components
+
+| Component | Responsibility |
+|---|---|
+| `.pipeline/pipeline.toml` | The policy: runtime, types, profiles, paths, packages, tiers. Per repo. |
+| `src/picard` | Pure function from (config, tier, titles, body, changed files) to a plan. |
+| Graph providers | Read one ecosystem's manifests and return packages, paths and edges: `uv`, `npm`, `cargo`, `go`, `command`. |
+| Impact engines | Map changed files to the packages they affect: `native`, `pants`, `command`. |
+| Executors | Build a suite's command for a package that does not spell it out: `pytest`, `uv-pytest`, `go-test`, `cargo-test`, `pnpm`, `npm`, `make`. |
+| `bootstrap.py` | The composition root. It registers the built-ins and the plugins, and nothing else does. |
+| `pipeline-plan` action | Runs picard in Actions, exports `plan`, `matrix`, `extras`, `runtime`, `skip` and writes a job summary. |
+| `pipeline-check-title` action | Validates the PR title with the same parser the plan uses. |
+| `pipeline-run-suite` action | Sets up Python/Node from `[runtime]`, then runs one suite command. |
+| `pipeline-extra` action | Runs one named extra: `secrets`, `workflow-lint`, `semgrep`, `dependency-review`, `link-check`, `breaking-change-checks`. |
+| `pipeline-*.yml` workflows | Orchestration per tier: plan job, matrix jobs, extras, gate. No decisions. |
+
+## The plan
+
+```jsonc
+{
+  "schema": 1,
+  "tier": 1, "name": "pr-fast-gate", "compare": "pr-base",
+  "skip": false, "skip_reason": null,
+  "profile": "full",           // docs | light | infra | deps | full (config-defined)
+  "release": "minor",          // none | patch | minor | major
+  "commits": [{ "title": "...", "valid": true, "type": "feat", "scope": "api",
+                "breaking": false, "ticket": "ABC-1", "errors": [] }],
+  "changed_files": ["apps/api/x.py"],
+  "packages": ["api", "worker"],
+  "markers": "unit or integration",
+  "suites": [{ "id": "api:test", "package": "api", "suite": "test",
+               "command": "pytest apps/api -m \"unit or integration\"" }],
+  "extras": ["secrets"],
+  "runtime": { "runs_on": "ubuntu-24.04", "python_version": "3.12",
+               "node_version": "", "setup_command": "..." },
+  "reasons": ["type 'feat' -> profile 'full'"],
+  "warnings": []
+}
+```
+
+Everything a workflow needs is in it. `suites` becomes the job matrix, `extras` a second
+matrix, `runtime` the runner and toolchains, `skip` short-circuits a tier.
+
+## Impact and engines
+
+"Which packages does this change affect" is the one question picard delegates, and it is
+answered in two separate steps so each can be swapped.
+
+```
+manifests ──▶ graph provider ──▶ packages + edges ──┐
+                                                    ├──▶ impact engine ──▶ Impact
+changed files ──────────────────────────────────────┘
+```
+
+- **Graph providers** (`graph/providers/`) discover packages and the edges between them from the
+  files each ecosystem already maintains. They answer "what exists and what depends on what".
+- **Impact engines** (`graph/engines/`) answer "what does this change affect". `native` walks
+  the discovered graph: the deepest package that owns a file, then its dependents. `pants` asks
+  Pants (`list`, `dependents --transitive`) and sends the files it does not own to a fallback
+  engine. `command` asks any external tool over stdin and stdout.
+- **The shared policy** lives in the base class (`ImpactEngine.impact`): a global file such as
+  a lockfile affects every package, whatever the engine says. A subclass only implements the
+  engine-specific part. An engine never decides what to run, only what is affected.
+- **Fail safe.** An engine that fails, times out or does not own a file hands the question to
+  the fallback (`native` by default) and adds a note to the plan. The answer can get wider,
+  never narrower.
+- **Labels.** Every affected package records which engine decided it (`native`, `pants`,
+  `command`, `rule` or `global file`). `picard graph` and `simulate` show it as `via X`.
+- **Debug.** `--debug`, `PICARD_DEBUG=1` or `debug = true` under `[impact]` prints on stderr
+  what each engine returned and where Pants and the native engine differ. The plan JSON on
+  stdout stays clean.
+- **Setup.** `picard setup` asks the engine to prepare the repo, and `picard setup --check`
+  verifies it for CI. `native` needs nothing. The `pants` engine writes `pants.toml` and the
+  build files, never overwrites an existing `pants.toml`, and is idempotent.
+- **Memoised.** An impact is computed once per distinct file list in a run, so an external
+  engine is not called once per tier.
+
+Providers, engines and executors are looked up by name in registries
+(`registry.py`). A repo can add its own from `[plugins]` without changing picard. See
+[ADR 0005](adr/0005-plugin-architecture.md).
+
+## Decisions
+
+- **Planner as code, policy as data.** Logic that decides what to run is tested Python, not
+  `if:` expressions spread over YAML. See [ADR 0001](adr/0001-plan-driven-tiers.md).
+- **A package, pinned by the host.** picard is a normal Python package with a `picard`
+  command. A host repo pins the version it runs (a tag or commit) and owns its workflow files,
+  so a tooling change is a reviewed bump in that repo. `picard init` and `picard update` write
+  the files, and `picard update` is how a host follows a new picard. See
+  [ADR 0006](adr/0006-picard-is-a-python-package.md), which supersedes
+  [ADR 0002](adr/0002-vendored-template.md).
+- **Language-agnostic.** The planner knows packages, paths, markers and command templates,
+  not pytest or npm. Providers and executors per ecosystem are plugins behind small interfaces,
+  and a repo can supply commands per package.
+- **Reuse, do not rebuild.** The graph comes from the package managers or from Pants. picard
+  owns the decision layer and the gate, and nothing a build tool already does.
+- **No lock-in.** Pants, Nx or Bazel can be the source of the graph or the engine, and none is
+  required. The default needs nothing installed.
+- **Fail closed.** An unparseable title, a file that matches no rule, or a job that should have
+  run and did not all end in a stricter run or a failed gate, never a silent pass.
+- **One required check per event.** `pipeline-gate` and `merge-gate` absorb skips safely.
+
+## Security model
+
+- **Untrusted text never reaches a shell.** PR titles and bodies are attacker-controlled. They
+  are passed as action inputs, mapped to `env:` inside the composite actions and read as
+  `$PICARD_TITLE`. No `run:` step interpolates `${{ github.event... }}`.
+- **Commands come from the repo's own `pipeline.toml`**, with the same trust as its workflows
+  (a PR that edits it is reviewed like a PR that edits a workflow, and `CODEOWNERS` covers
+  `.pipeline/` and `.github/`). `markers`, `runs_on` and the version strings are validated to
+  plain words because they are substituted into commands and `runs-on`.
+- **Fork PRs** run with a read-only token and no secrets. Do not add `pull_request_target`
+  and run PR code in it. They get no `PICARD_TOKEN` either, so a private picard repository
+  cannot be installed for them: keep picard readable, or do not run fork PRs.
+- **Least privilege**: workflows default to `contents: read`. Only the release workflow and
+  the nightly failure report raise it, at job or workflow level.
+- **Checkout without credentials** (`persist-credentials: false`) in every job that does not
+  push.
+- **Release tags use a GitHub App token**, so tag-triggered workflows start, and no personal
+  token is involved.
+- **Pin third-party actions to SHAs** before relying on this, and review the images in
+  `pipeline-extra`.
+
+## Limits
+
+- Package-level granularity: a change inside a package runs that package's whole suite for the
+  tier. Test-level impact analysis is on the [roadmap](improvements.md).
+- `{markers}` is a pytest-style expression. Other runners map it in the command or ignore it.
+- The graph is as precise as the dependencies a package declares. Edges that live in no
+  manifest are added with `depends_on` or a `[[path_rules]]` entry.
+- Only Python gets import-level precision, and only through the `pants` engine. Other
+  languages are decided by the native engine from their manifests.
+- A host runs the picard version it pinned, and its scaffolded workflows only change when
+  it runs `picard update`.

@@ -1,0 +1,96 @@
+name: Pipeline · Nightly
+
+# Tier 4. Everything, slow tests included, plus the deep scans. A failure opens one tracking
+# issue (or comments on the open one), so a red nightly is never only an email nobody reads.
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: pipeline-nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    outputs:
+      runtime: ${{ steps.t4.outputs.runtime }}
+      has: ${{ steps.t4.outputs.has_suites }}
+      matrix: ${{ steps.t4.outputs.matrix }}
+      extras: ${{ steps.t4.outputs.extras }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: t4
+        uses: ./.github/actions/pipeline-plan
+        with:
+          picard_repository: ${{ vars.PICARD_REPOSITORY }}
+          picard_ref: ${{ vars.PICARD_REF }}
+          picard_token: ${{ secrets.PICARD_TOKEN }}
+          tier: "4"
+
+  suites:
+    name: tier4 · ${{ matrix.id }}
+    needs: plan
+    if: needs.plan.outputs.has == 'true'
+    runs-on: ${{ fromJSON(needs.plan.outputs.runtime).runs_on }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pipeline-run-suite
+        with:
+          runtime: ${{ needs.plan.outputs.runtime }}
+          command: ${{ matrix.command }}
+
+  extras:
+    name: extra · ${{ matrix.extra }}
+    needs: plan
+    if: needs.plan.outputs.extras != '[]'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        extra: ${{ fromJSON(needs.plan.outputs.extras) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/pipeline-extra
+        with:
+          name: ${{ matrix.extra }}
+
+  report:
+    name: report-failure
+    needs: [plan, suites, extras]
+    if: failure()
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the tracking issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Nightly pipeline is failing"
+          existing=$(gh issue list --repo "$REPO" --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body "Failed again: $RUN_URL"
+          else
+            gh issue create --repo "$REPO" --title "$title" --body "The nightly run failed: $RUN_URL"
+          fi

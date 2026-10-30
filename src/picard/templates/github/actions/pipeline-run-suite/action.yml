@@ -1,0 +1,33 @@
+name: pipeline run-suite
+description: >-
+  Install the toolchains named in [runtime], run its setup command, then run one suite command
+  from the plan. The caller must have checked out the repository.
+
+inputs:
+  runtime:
+    description: The plan's `runtime` output, JSON with runs_on, python_version, node_version and setup_command.
+    required: true
+  command:
+    description: The suite command from the plan matrix.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - if: fromJSON(inputs.runtime).python_version != ''
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ fromJSON(inputs.runtime).python_version }}
+    - if: fromJSON(inputs.runtime).node_version != ''
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ fromJSON(inputs.runtime).node_version }}
+    - shell: bash
+      env:
+        SETUP_COMMAND: ${{ fromJSON(inputs.runtime).setup_command }}
+        SUITE_COMMAND: ${{ inputs.command }}
+      run: |
+        # Both commands come from the repo's own .pipeline/pipeline.toml, with the same trust as
+        # its workflows. They are passed through the environment, never interpolated.
+        if [ -n "$SETUP_COMMAND" ]; then bash -euo pipefail -c "$SETUP_COMMAND"; fi
+        bash -euo pipefail -c "$SUITE_COMMAND"

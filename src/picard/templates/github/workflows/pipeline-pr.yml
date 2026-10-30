@@ -1,0 +1,180 @@
+name: Pipeline · PR
+
+# Tier 1, the fast gate: affected packages only, unit and integration markers.
+# Tier 2, the baseline: the must-pass list from path rules, the baseline marker. It starts
+# only after tier 1 is green, so a broken PR fails cheap and early.
+# Both read one plan built by .pipeline/ from the PR title and the changed files.
+#
+# Branch protection requires exactly one check from this workflow: `pipeline-gate`.
+
+on:
+  pull_request:
+    branches: [main]
+    # `edited` re-plans when the title changes, since the title drives the plan.
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+concurrency:
+  group: pipeline-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  title:
+    name: pr-title
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pipeline-check-title
+        with:
+          picard_repository: ${{ vars.PICARD_REPOSITORY }}
+          picard_ref: ${{ vars.PICARD_REF }}
+          picard_token: ${{ secrets.PICARD_TOKEN }}
+          title: ${{ github.event.pull_request.title }}
+          body: ${{ github.event.pull_request.body }}
+
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    outputs:
+      profile: ${{ steps.t1.outputs.profile }}
+      release: ${{ steps.t1.outputs.release }}
+      runtime: ${{ steps.t1.outputs.runtime }}
+      skip1: ${{ steps.t1.outputs.skip }}
+      has1: ${{ steps.t1.outputs.has_suites }}
+      matrix1: ${{ steps.t1.outputs.matrix }}
+      skip2: ${{ steps.t2.outputs.skip }}
+      has2: ${{ steps.t2.outputs.has_suites }}
+      matrix2: ${{ steps.t2.outputs.matrix }}
+      extras: ${{ steps.extras.outputs.extras }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: t1
+        uses: ./.github/actions/pipeline-plan
+        with:
+          picard_repository: ${{ vars.PICARD_REPOSITORY }}
+          picard_ref: ${{ vars.PICARD_REF }}
+          picard_token: ${{ secrets.PICARD_TOKEN }}
+          tier: "1"
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+          title: ${{ github.event.pull_request.title }}
+          body: ${{ github.event.pull_request.body }}
+      - id: t2
+        uses: ./.github/actions/pipeline-plan
+        with:
+          picard_repository: ${{ vars.PICARD_REPOSITORY }}
+          picard_ref: ${{ vars.PICARD_REF }}
+          picard_token: ${{ secrets.PICARD_TOKEN }}
+          tier: "2"
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+          title: ${{ github.event.pull_request.title }}
+          body: ${{ github.event.pull_request.body }}
+      - id: extras
+        shell: bash
+        env:
+          E1: ${{ steps.t1.outputs.extras }}
+          E2: ${{ steps.t2.outputs.extras }}
+        run: echo "extras=$(jq -cn --argjson a "$E1" --argjson b "$E2" '$a + $b | unique')" >> "$GITHUB_OUTPUT"
+
+  fast-gate:
+    name: tier1 · ${{ matrix.id }}
+    needs: plan
+    if: needs.plan.outputs.skip1 != 'true' && needs.plan.outputs.has1 == 'true'
+    runs-on: ${{ fromJSON(needs.plan.outputs.runtime).runs_on }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix1) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pipeline-run-suite
+        with:
+          runtime: ${{ needs.plan.outputs.runtime }}
+          command: ${{ matrix.command }}
+
+  baseline:
+    name: tier2 · ${{ matrix.id }}
+    needs: [plan, fast-gate]
+    if: >-
+      always() && needs.plan.result == 'success'
+      && needs.plan.outputs.skip2 != 'true' && needs.plan.outputs.has2 == 'true'
+      && (needs.fast-gate.result == 'success' || needs.fast-gate.result == 'skipped')
+    runs-on: ${{ fromJSON(needs.plan.outputs.runtime).runs_on }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix2) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pipeline-run-suite
+        with:
+          runtime: ${{ needs.plan.outputs.runtime }}
+          command: ${{ matrix.command }}
+
+  extras:
+    name: extra · ${{ matrix.extra }}
+    needs: plan
+    if: needs.plan.outputs.extras != '[]'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        extra: ${{ fromJSON(needs.plan.outputs.extras) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/pipeline-extra
+        with:
+          name: ${{ matrix.extra }}
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+          body: ${{ github.event.pull_request.body }}
+
+  # The one check to require in branch protection. Failed or cancelled always fails it, and
+  # so does a job the plan said must run but that did not succeed.
+  pipeline-gate:
+    name: pipeline-gate
+    if: always()
+    needs: [title, plan, fast-gate, baseline, extras]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Every planned job succeeded
+        shell: bash
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          SKIP1: ${{ needs.plan.outputs.skip1 }}
+          HAS1: ${{ needs.plan.outputs.has1 }}
+          SKIP2: ${{ needs.plan.outputs.skip2 }}
+          HAS2: ${{ needs.plan.outputs.has2 }}
+          EXTRAS: ${{ needs.plan.outputs.extras }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS" | jq -r 'to_entries[] | "- \(.key): \(.value.result)"' | tee -a "$GITHUB_STEP_SUMMARY"
+          result() { jq -r --arg k "$1" '.[$k].result' <<<"$NEEDS"; }
+          bad=""
+          for job in title plan; do
+            [ "$(result "$job")" = success ] || bad="$bad $job"
+          done
+          if [ "$SKIP1" != true ] && [ "$HAS1" = true ] && [ "$(result fast-gate)" != success ]; then bad="$bad fast-gate"; fi
+          if [ "$SKIP2" != true ] && [ "$HAS2" = true ] && [ "$(result baseline)" != success ]; then bad="$bad baseline"; fi
+          if [ "$EXTRAS" != '[]' ] && [ "$(result extras)" != success ]; then bad="$bad extras"; fi
+          for job in fast-gate baseline extras; do
+            case "$(result "$job")" in failure|cancelled) bad="$bad $job" ;; esac
+          done
+          if [ -n "$bad" ]; then
+            echo "::error::pipeline-gate failed:$(tr ' ' '\n' <<<"$bad" | sort -u | tr '\n' ' ')"
+            exit 1
+          fi

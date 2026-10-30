@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "picard"
+dynamic = ["version"]
+description = "Affected-based, change-based, incremental multitier CI/CD: run what a change affects, widen the net tier by tier."
+readme = "README.md"
+requires-python = ">=3.11"
+# The planner is standard library only. Keep it that way: it is a dependency of every repo's CI.
+dependencies = []
+
+[project.scripts]
+picard = "picard.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.8"]
+
+[tool.hatch.version]
+path = "src/picard/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/picard"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/picard", "tests", "docs", "README.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra --strict-markers"
+markers = [
+  "unit: fast, no I/O beyond temp dirs",
+  "integration: drives git or the CLI end to end",
+  "baseline: must-pass suite for every PR that touches code",
+  "slow: excluded from the merge queue, runs nightly",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+target-version = "py311"
+extend-exclude = ["src/picard/templates"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+# The formatter owns line length; it cannot split long f-strings and test titles.
+ignore = ["E501"]

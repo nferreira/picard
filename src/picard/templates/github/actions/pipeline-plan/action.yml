@@ -1,0 +1,83 @@
+name: pipeline plan
+description: >-
+  Compute one tier's plan from the PR title, the changed files and .pipeline/pipeline.toml.
+  Installs the picard version pinned by the caller, so the caller must have checked out the
+  repository.
+
+inputs:
+  picard_repository:
+    description: "owner/name of the picard repository (the repository variable PICARD_REPOSITORY)."
+    required: true
+  picard_ref:
+    description: Tag or commit SHA of picard to install (the repository variable PICARD_REF).
+    required: true
+  picard_token:
+    description: Token that can read the picard repository (the secret PICARD_TOKEN). Empty if public.
+    default: ""
+  tier:
+    description: Tier number to plan (0 to 4).
+    required: true
+  config:
+    description: Path to pipeline.toml in the checked-out repository.
+    default: .pipeline/pipeline.toml
+  base:
+    description: Base commit for tiers that compare against a PR base. Empty for tiers 3 and 4.
+    default: ""
+  head:
+    description: Head commit to compare.
+    default: HEAD
+  title:
+    description: PR title. Passed through the environment, never interpolated into a shell.
+    default: ""
+  body:
+    description: PR body, scanned for a BREAKING CHANGE footer.
+    default: ""
+
+outputs:
+  plan:
+    description: The full plan as compact JSON.
+    value: ${{ steps.plan.outputs.plan }}
+  skip:
+    description: '"true" when this tier has nothing to do for the change.'
+    value: ${{ steps.plan.outputs.skip }}
+  profile:
+    description: Effective profile (docs, light, infra, deps, full).
+    value: ${{ steps.plan.outputs.profile }}
+  release:
+    description: Release effect from the commit type (none, patch, minor, major).
+    value: ${{ steps.plan.outputs.release }}
+  matrix:
+    description: '{"include": [...]} with one entry per suite to run.'
+    value: ${{ steps.plan.outputs.matrix }}
+  has_suites:
+    description: '"true" when the matrix is not empty.'
+    value: ${{ steps.plan.outputs.has_suites }}
+  extras:
+    description: JSON array of extra job names to run.
+    value: ${{ steps.plan.outputs.extras }}
+  runtime:
+    description: 'JSON {runs_on, python_version, node_version, setup_command} from [runtime].'
+    value: ${{ steps.plan.outputs.runtime }}
+
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/pipeline-setup-picard
+      with:
+        repository: ${{ inputs.picard_repository }}
+        ref: ${{ inputs.picard_ref }}
+        token: ${{ inputs.picard_token }}
+    - id: plan
+      shell: bash
+      env:
+        PICARD_TITLE: ${{ inputs.title }}
+        PICARD_BODY: ${{ inputs.body }}
+        IN_TIER: ${{ inputs.tier }}
+        IN_CONFIG: ${{ inputs.config }}
+        IN_BASE: ${{ inputs.base }}
+        IN_HEAD: ${{ inputs.head }}
+      run: |
+        args=(plan --config "$IN_CONFIG" --tier "$IN_TIER" --head "$IN_HEAD" \
+          --format text --github-output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY")
+        if [ -n "$IN_BASE" ]; then args+=(--base "$IN_BASE"); fi
+        picard "${args[@]}"

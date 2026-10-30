@@ -1,0 +1,7 @@
+# Every PR needs a code owner who is not the author. Replace with a real team or user.
+* @REPLACE_ME
+
+# The pipeline definition changes how every PR is verified: keep it owned.
+/.pipeline/           @REPLACE_ME
+/.github/workflows/   @REPLACE_ME
+/.github/actions/     @REPLACE_ME

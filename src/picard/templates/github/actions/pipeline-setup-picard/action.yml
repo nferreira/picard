@@ -1,0 +1,45 @@
+name: pipeline setup-picard
+description: >-
+  Install picard from a pinned checkout of its repository, outside the workspace so the
+  repository's own linters never scan it. Prefer a full commit SHA for `ref`.
+
+inputs:
+  repository:
+    description: "owner/name of the picard repository."
+    required: true
+  ref:
+    description: Tag, branch or full commit SHA of picard to install.
+    required: true
+  token:
+    description: Token that can read the picard repository. Empty for a public repository.
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - shell: bash
+      env:
+        PICARD_REPOSITORY: ${{ inputs.repository }}
+        PICARD_REF: ${{ inputs.ref }}
+        PICARD_TOKEN: ${{ inputs.token }}
+      run: |
+        [[ "$PICARD_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+          || { echo "::error::picard repository must look like owner/name"; exit 1; }
+        [[ "$PICARD_REF" =~ ^[A-Za-z0-9_./-]+$ ]] \
+          || { echo "::error::picard ref may only contain letters, digits and ._/-"; exit 1; }
+        src="$RUNNER_TEMP/picard-src"
+        if [ -n "$PICARD_TOKEN" ]; then
+          basic="$(printf 'x-access-token:%s' "$PICARD_TOKEN" | base64 | tr -d '\n')"
+          echo "::add-mask::$basic"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL}/.extraheader"
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
+        fi
+        git init --quiet "$src"
+        git -C "$src" fetch --quiet --depth 1 "${GITHUB_SERVER_URL}/${PICARD_REPOSITORY}.git" "$PICARD_REF"
+        git -C "$src" checkout --quiet FETCH_HEAD
+        python3 -m pip install --quiet "$src"
+        picard --version

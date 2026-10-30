@@ -1,0 +1,37 @@
+name: pipeline check-title
+description: Validate a PR title against the Conventional Commit rules in .pipeline/pipeline.toml. The caller must have checked out the repository.
+
+inputs:
+  picard_repository:
+    description: "owner/name of the picard repository (the repository variable PICARD_REPOSITORY)."
+    required: true
+  picard_ref:
+    description: Tag or commit SHA of picard to install (the repository variable PICARD_REF).
+    required: true
+  picard_token:
+    description: Token that can read the picard repository (the secret PICARD_TOKEN). Empty if public.
+    default: ""
+  title:
+    description: PR title to validate.
+    required: true
+  body:
+    description: PR body, so a BREAKING CHANGE footer is recognised.
+    default: ""
+  config:
+    description: Path to pipeline.toml in the checked-out repository.
+    default: .pipeline/pipeline.toml
+
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/pipeline-setup-picard
+      with:
+        repository: ${{ inputs.picard_repository }}
+        ref: ${{ inputs.picard_ref }}
+        token: ${{ inputs.picard_token }}
+    - shell: bash
+      env:
+        PICARD_TITLE: ${{ inputs.title }}
+        PICARD_BODY: ${{ inputs.body }}
+        IN_CONFIG: ${{ inputs.config }}
+      run: picard check-title --config "$IN_CONFIG"

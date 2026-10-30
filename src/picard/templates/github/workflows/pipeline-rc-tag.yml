@@ -1,0 +1,53 @@
+name: Pipeline · Release candidate tag
+
+# Pushes the next vX.Y.Z-rc.N tag on the head of an open Release PR, so the version that is
+# about to ship can be deployed to a pre-production environment and approved there before
+# the Release PR is merged. Release Please itself only ever creates the final tag, so without
+# this nothing creates a pre-release tag and a tag-driven pre-production deploy never starts.
+#
+# Run by hand:  gh workflow run pipeline-rc-tag.yml -f pr-number=123
+# The tag is created through the API with the release GitHub App token so that workflows
+# listening for tags fire.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: Number of the open Release PR
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      - id: create
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || { echo "::error::pr-number must be a number"; exit 1; }
+          pr=$(gh api "repos/$REPO/pulls/$PR_NUMBER")
+          [ "$(jq -r .state <<<"$pr")" = open ] || { echo "::error::PR #$PR_NUMBER is not open"; exit 1; }
+          head_ref=$(jq -r .head.ref <<<"$pr")
+          [[ "$head_ref" == release-please--* ]] || { echo "::error::PR #$PR_NUMBER is not a Release Please PR"; exit 1; }
+          title=$(jq -r .title <<<"$pr")
+          sha=$(jq -r .head.sha <<<"$pr")
+          re='^chore(\([^)]*\))?: release ([0-9]+\.[0-9]+\.[0-9]+)$'
+          [[ "$title" =~ $re ]] || { echo "::error::Unexpected Release PR title: $title"; exit 1; }
+          version="${BASH_REMATCH[2]}"
+          last=$(gh api "repos/$REPO/git/matching-refs/tags/v${version}-rc." --jq '.[].ref' \
+            | sed 's#.*-rc\.##' | sort -n | tail -1)
+          tag="v${version}-rc.$(( ${last:-0} + 1 ))"
+          gh api -X POST "repos/$REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$sha" >/dev/null
+          echo "Created $tag at $sha" | tee -a "$GITHUB_STEP_SUMMARY"

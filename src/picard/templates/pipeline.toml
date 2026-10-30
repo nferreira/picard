@@ -1,0 +1,214 @@
+# pipeline.toml: the one file you edit to tune this repo's pipeline.
+#
+# Workflows never decide what to run. They ask `picard` for a plan and execute it, so
+# changing behaviour means editing this file, not YAML. After an edit run, from the repo root:
+#   picard validate-config
+# Reference: docs/configuration.md in the picard repository
+
+# ── Runtime: where and how suites run in CI ─────────────────────────────────────────────
+# Empty python_version / node_version skip the setup step. setup_command runs before every
+# suite (install dependencies here). It is read from this file, so treat edits to it like
+# edits to a workflow.
+[runtime]
+runs_on = "ubuntu-24.04"
+python_version = "3.12"
+node_version = ""
+# Install your dependencies here, for example: "uv sync --locked" or "pnpm install --frozen-lockfile".
+setup_command = ""
+
+# ── Conventional Commits ────────────────────────────────────────────────────────────────
+[commits]
+types = ["feat", "fix", "perf", "refactor", "docs", "test", "build", "ci", "chore", "revert", "style"]
+# A ticket ID in parentheses at the end of the PR title, for example (ABC-123).
+require_ticket = true
+# Titles exempt from the ticket rule (bots and release PRs). Regexes, matched anywhere.
+ticket_exempt = ['^chore: release ', '^(chore|build)\((deps|deps-dev)\)']
+# An unparseable title is treated as this profile (fail closed).
+fallback_profile = "full"
+
+# Type -> profile (how much verification) and release effect (what release-please will do).
+[types.feat]
+profile = "full"
+release = "minor"
+[types.fix]
+profile = "full"
+release = "patch"
+[types.perf]
+profile = "full"
+release = "patch"
+[types.refactor]
+profile = "full"
+release = "none"
+[types.revert]
+profile = "full"
+release = "none"
+[types.test]
+profile = "light"
+release = "none"
+[types.style]
+profile = "light"
+release = "none"
+[types.chore]
+profile = "light"
+release = "none"
+[types.docs]
+profile = "docs"
+release = "none"
+[types.build]
+profile = "infra"
+release = "none"
+[types.ci]
+profile = "infra"
+release = "none"
+
+# Title patterns that override the type's profile, first match wins. Dependabot bumps are
+# `chore(deps)`, but a dependency bump can break the build, so it gets the `deps` profile.
+[[overrides]]
+match = '^(chore|build)\((deps|deps-dev)\)'
+profile = "deps"
+
+# A breaking change (`!` or a BREAKING CHANGE: footer) raises the floor and adds checks.
+# release = "minor" while the repo is below 1.0 (release-please bump-minor-pre-major).
+[breaking]
+profile = "full"
+release = "major"
+tiers = [2]
+extras = ["breaking-change-checks"]
+
+# ── Profiles: how much a kind of change must prove ──────────────────────────────────────
+# rank:       higher means stricter; the strongest profile among type and paths wins.
+# run_suites: false skips test suites entirely (extras still run).
+# tiers:      which PR tiers apply (0 local, 1 fast gate, 2 baseline).
+# extras.N:   named jobs enabled at tier N. Known: secrets, workflow-lint,
+#             dependency-review, semgrep, breaking-change-checks, link-check.
+[profiles.docs]
+rank = 0
+run_suites = false
+tiers = [0, 1]
+[profiles.docs.extras]
+1 = ["secrets", "link-check"]
+
+[profiles.light]
+rank = 1
+tiers = [0, 1]
+[profiles.light.extras]
+1 = ["secrets"]
+
+[profiles.infra]
+rank = 2
+tiers = [0, 1, 2]
+[profiles.infra.extras]
+1 = ["secrets", "workflow-lint"]
+2 = ["workflow-lint"]
+
+[profiles.deps]
+rank = 3
+tiers = [0, 1, 2]
+[profiles.deps.extras]
+1 = ["secrets", "dependency-review"]
+2 = ["semgrep"]
+
+[profiles.full]
+rank = 4
+tiers = [0, 1, 2]
+[profiles.full.extras]
+1 = ["secrets"]
+2 = ["semgrep", "dependency-review"]
+
+# ── Paths: what a file demands, whatever the title says ─────────────────────────────────
+[paths]
+# Files that need nothing beyond docs checks.
+docs = ["**/*.md", "docs/**", "LICENSE"]
+# Any file matching nothing below demands this profile.
+default = "full"
+# Touching one of these affects every package.
+global = [".pipeline/pipeline.toml", ".github/workflows/**"]
+
+[[paths.floor]]
+globs = [".github/**", ".pipeline/pipeline.toml"]
+profile = "infra"
+[[paths.floor]]
+globs = ["tests/**", "**/test_*.py", "**/conftest.py"]
+profile = "light"
+[[paths.floor]]
+globs = ["pyproject.toml", "uv.lock", "package.json", "pnpm-lock.yaml", "go.mod", "go.sum"]
+profile = "deps"
+
+# ── Packages: the units tests run against ───────────────────────────────────────────────
+# Add one [[packages]] entry per unit of your repo. A single-package repo uses path = ".".
+# In a monorepo list each package and its depends_on, so a change in a library also tests
+# everything that uses it. Commands may use {package}, {path} and {markers}; only the
+# commands a tier lists in its `run` are executed, from the repo root.
+#
+# Replace this default with your own packages. Prefer [[discover]] so the packages and their
+# dependencies are read from your package managers instead of listed here.
+[[packages]]
+name = "app"
+path = "."
+baseline = false
+[packages.commands]
+lint = "ruff check . && ruff format --check ."
+test = 'python -m pytest -m "{markers}"'
+
+# A monorepo, packages listed by hand:
+# [[packages]]
+# name = "core"
+# path = "packages/core"
+# [packages.commands]
+# test = 'python -m pytest packages/core -m "{markers}"'
+#
+# [[packages]]
+# name = "api"
+# path = "apps/api"
+# depends_on = ["core"]
+# baseline = true
+# [packages.commands]
+# test = 'python -m pytest apps/api -m "{markers}"'
+
+# Tier 2 also runs these packages when matching files change (the "must-pass list from
+# path rules"), on top of the affected ones.
+# [[path_rules]]
+# globs = ["db/migrations/**"]
+# packages = ["api"]
+
+# ── Tiers: the same plan, read five ways ────────────────────────────────────────────────
+# compare:  merge-base (local, vs origin/main) | pr-base (PR base commit) | none (ignore the diff)
+# packages: affected | baseline (affected + path rules + baseline = true) | all
+# markers:  pytest expression substituted into {markers}; empty means no filter.
+# run:      command names from [packages.commands].
+[tiers.0]
+name = "pre-push"
+compare = "merge-base"
+packages = "affected"
+markers = "unit"
+run = ["lint", "test"]
+
+[tiers.1]
+name = "pr-fast-gate"
+compare = "pr-base"
+packages = "affected"
+markers = "unit or integration"
+run = ["lint", "test"]
+
+[tiers.2]
+name = "pr-baseline"
+compare = "pr-base"
+packages = "baseline"
+markers = "baseline"
+run = ["test"]
+
+[tiers.3]
+name = "merge-queue"
+compare = "none"
+packages = "all"
+markers = "not slow"
+run = ["lint", "test"]
+
+# dependency-review only works on pull requests, so it is not a tier 3 or 4 extra.
+[tiers.4]
+name = "nightly"
+compare = "none"
+packages = "all"
+markers = ""
+run = ["test"]
+extras = ["secrets", "semgrep"]

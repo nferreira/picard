@@ -1,0 +1,13 @@
+#!/usr/bin/env sh
+# Tier 0: run the affected unit tests locally, from the same plan CI uses.
+# Compares against the merge base with origin/main and reads the commit subjects since then.
+# Bypass in an emergency with `git push --no-verify`. CI re-checks everything.
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+if ! command -v picard >/dev/null 2>&1; then
+  echo "picard is not installed, and this hook needs it." >&2
+  echo "Install it from a clone of the picard repository: uv tool install --editable <clone>" >&2
+  echo "(bypass once with --no-verify; CI re-checks everything)" >&2
+  exit 1
+fi
+exec picard run --tier 0 --local

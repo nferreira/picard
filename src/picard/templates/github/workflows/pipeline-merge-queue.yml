@@ -1,0 +1,94 @@
+name: Pipeline · Merge queue
+
+# Tier 3. Runs on the `merge_group` event: a temporary branch of main plus the PRs queued
+# ahead of this one. Tier 3 ignores the diff and the title and runs every package with the
+# "not slow" markers, so what lands on main was tested together with its neighbours.
+# Branch protection requires the check `merge-gate`, and the merge queue must be enabled.
+
+on:
+  merge_group:
+
+concurrency:
+  group: pipeline-merge-queue-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    outputs:
+      runtime: ${{ steps.t3.outputs.runtime }}
+      has: ${{ steps.t3.outputs.has_suites }}
+      matrix: ${{ steps.t3.outputs.matrix }}
+      extras: ${{ steps.t3.outputs.extras }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: t3
+        uses: ./.github/actions/pipeline-plan
+        with:
+          picard_repository: ${{ vars.PICARD_REPOSITORY }}
+          picard_ref: ${{ vars.PICARD_REF }}
+          picard_token: ${{ secrets.PICARD_TOKEN }}
+          tier: "3"
+
+  suites:
+    name: tier3 · ${{ matrix.id }}
+    needs: plan
+    if: needs.plan.outputs.has == 'true'
+    runs-on: ${{ fromJSON(needs.plan.outputs.runtime).runs_on }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pipeline-run-suite
+        with:
+          runtime: ${{ needs.plan.outputs.runtime }}
+          command: ${{ matrix.command }}
+
+  extras:
+    name: extra · ${{ matrix.extra }}
+    needs: plan
+    if: needs.plan.outputs.extras != '[]'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        extra: ${{ fromJSON(needs.plan.outputs.extras) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/pipeline-extra
+        with:
+          name: ${{ matrix.extra }}
+
+  merge-gate:
+    name: merge-gate
+    if: always()
+    needs: [plan, suites, extras]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Every planned job succeeded
+        shell: bash
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          HAS: ${{ needs.plan.outputs.has }}
+          EXTRAS: ${{ needs.plan.outputs.extras }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS" | jq -r 'to_entries[] | "- \(.key): \(.value.result)"' | tee -a "$GITHUB_STEP_SUMMARY"
+          result() { jq -r --arg k "$1" '.[$k].result' <<<"$NEEDS"; }
+          bad=""
+          [ "$(result plan)" = success ] || bad="$bad plan"
+          if [ "$HAS" = true ] && [ "$(result suites)" != success ]; then bad="$bad suites"; fi
+          if [ "$EXTRAS" != '[]' ] && [ "$(result extras)" != success ]; then bad="$bad extras"; fi
+          if [ -n "$bad" ]; then echo "::error::merge-gate failed:$bad"; exit 1; fi
