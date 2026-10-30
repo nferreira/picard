@@ -1,6 +1,6 @@
 name: pipeline plan
 description: >-
-  Compute one tier's plan from the PR title, the changed files and .pipeline/pipeline.toml.
+  Compute one tier's plan from the PR title, the changed files and .picard/pipeline.toml.
   Installs the picard version pinned by the caller, so the caller must have checked out the
   repository.
 
@@ -19,7 +19,7 @@ inputs:
     required: true
   config:
     description: Path to pipeline.toml in the checked-out repository.
-    default: .pipeline/pipeline.toml
+    default: .picard/pipeline.toml
   base:
     description: Base commit for tiers that compare against a PR base. Empty for tiers 3 and 4.
     default: ""

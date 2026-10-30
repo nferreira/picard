@@ -1,4 +1,4 @@
-# 0002 · Vendored tooling in `.pipeline/` and `.github/`
+# 0002 · Vendored tooling in `.picard/` and `.github/`
 
 Status: superseded by [0006](0006-picard-is-a-python-package.md)
 
@@ -14,10 +14,10 @@ from a central repo pinned to a tag.
 Vendor the tooling. Claim two directories only:
 
 - `.github/` for everything GitHub reads, with every file we add prefixed `pipeline-`.
-- `.pipeline/` for the planner, config, hooks, tests, docs and dev tooling, including its own
+- `.picard/` for the planner, config, hooks, tests, docs and dev tooling, including its own
   `pyproject.toml` and `justfile` so nothing leaks to the root.
 
-Provide `.pipeline/bin/update` to pull newer tooling and to install into an existing repo.
+Provide `.picard/bin/update` to pull newer tooling and to install into an existing repo.
 
 ## Consequences
 

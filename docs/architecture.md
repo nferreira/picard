@@ -9,7 +9,7 @@ tiers. This page is how it is put together.
                         ┌─────────────────────────────────────┐
  PR title / body ──────▶│                                     │
  changed files ────────▶│  picard                              │──▶ plan (JSON)
- tier number ──────────▶│  + .pipeline/pipeline.toml          │
+ tier number ──────────▶│  + .picard/pipeline.toml          │
                         └─────────────────────────────────────┘
                                                                   │
         ┌─────────────┬─────────────┬──────────────┬──────────────┴┬────────────┐
@@ -44,16 +44,16 @@ pyproject.toml, justfile         build, dev tools and tasks
 .github/workflows/ci.yml         picard's own CI (not the templates above)
 ```
 
-**A host repository** after `picard init`. Everything is under `.github/` and `.pipeline/`,
+**A host repository** after `picard init`. Everything is under `.github/` and `.picard/`,
 and every file picard owns is prefixed `pipeline-` or sits in a picard-owned folder:
 
 ```
 .github/workflows/pipeline-*.yml     one workflow per tier (and the rc tag), replaced on update
 .github/actions/pipeline-*/          composite actions the workflows call, replaced on update
 .github/release-please/, CODEOWNERS, dependabot.yaml, pull_request_template.md   yours after init
-.pipeline/pipeline.toml              the one file a repo edits (yours after init)
-.pipeline/hooks/                     commit-msg, pre-push, replaced on update
-.pipeline/templates/pytest/          marker plugin to copy into a test root, replaced on update
+.picard/pipeline.toml              the one file a repo edits (yours after init)
+.picard/hooks/                     commit-msg, pre-push, replaced on update
+.picard/templates/pytest/          marker plugin to copy into a test root, replaced on update
 ```
 
 The host holds no picard code. CI installs a pinned picard in `pipeline-setup-picard`
@@ -64,7 +64,7 @@ The host holds no picard code. CI installs a pinned picard in `pipeline-setup-pi
 
 | Component | Responsibility |
 |---|---|
-| `.pipeline/pipeline.toml` | The policy: runtime, types, profiles, paths, packages, tiers. Per repo. |
+| `.picard/pipeline.toml` | The policy: runtime, types, profiles, paths, packages, tiers. Per repo. |
 | `src/picard` | Pure function from (config, tier, titles, body, changed files) to a plan. |
 | Graph providers | Read one ecosystem's manifests and return packages, paths and edges: `uv`, `npm`, `cargo`, `go`, `command`. |
 | Impact engines | Map changed files to the packages they affect: `native`, `pants`, `command`. |
@@ -169,7 +169,7 @@ Providers, engines and executors are looked up by name in registries
   `$PICARD_TITLE`. No `run:` step interpolates `${{ github.event... }}`.
 - **Commands come from the repo's own `pipeline.toml`**, with the same trust as its workflows
   (a PR that edits it is reviewed like a PR that edits a workflow, and `CODEOWNERS` covers
-  `.pipeline/` and `.github/`). `markers`, `runs_on` and the version strings are validated to
+  `.picard/` and `.github/`). `markers`, `runs_on` and the version strings are validated to
   plain words because they are substituted into commands and `runs-on`.
 - **Fork PRs** run with a read-only token and no secrets. Do not add `pull_request_target`
   and run PR code in it. They get no `PICARD_TOKEN` either, so a private picard repository

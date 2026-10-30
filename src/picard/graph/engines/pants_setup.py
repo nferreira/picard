@@ -67,7 +67,7 @@ def render_config(version: str, roots: list[str], python_constraint: str | None)
         "[GLOBAL]",
         f'pants_version = "{version}"',
         'backend_packages = ["pants.backend.python"]',
-        'pants_ignore = ["/node_modules", ".venv", "/.pipeline", "/build", "/dist"]',
+        'pants_ignore = ["/node_modules", ".venv", "/.picard", "/build", "/dist"]',
         "pantsd = false",
         "",
         "[source]",

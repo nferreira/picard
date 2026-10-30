@@ -1,5 +1,5 @@
 name: pipeline check-title
-description: Validate a PR title against the Conventional Commit rules in .pipeline/pipeline.toml. The caller must have checked out the repository.
+description: Validate a PR title against the Conventional Commit rules in .picard/pipeline.toml. The caller must have checked out the repository.
 
 inputs:
   picard_repository:
@@ -19,7 +19,7 @@ inputs:
     default: ""
   config:
     description: Path to pipeline.toml in the checked-out repository.
-    default: .pipeline/pipeline.toml
+    default: .picard/pipeline.toml
 
 runs:
   using: composite

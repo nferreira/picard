@@ -7,7 +7,7 @@
 * **Repo-owned** files are written only when missing and never overwritten, because the repo
   edits them: `pipeline.toml`, release-please config, CODEOWNERS, Dependabot, the PR template.
 * Nothing else is touched: any workflow or action that is not named `pipeline-*`, and
-  everything outside `.github/` and `.pipeline/`.
+  everything outside `.github/` and `.picard/`.
 
 The templates are package data (`picard/templates/`), read with importlib.resources so this
 works from a wheel as well as from a checkout.
@@ -26,7 +26,7 @@ from pathlib import Path
 
 TEMPLATES = files("picard") / "templates"
 
-HOOKS_DIR = ".pipeline/hooks"
+HOOKS_DIR = ".picard/hooks"
 
 
 class ScaffoldError(RuntimeError):
@@ -79,13 +79,13 @@ def entries() -> list[Entry]:
         out.append(Entry(rel, _read(node), True, False))
     out.append(
         Entry(
-            ".pipeline/templates/pytest/conftest.py",
+            ".picard/templates/pytest/conftest.py",
             _read(TEMPLATES / "pytest" / "conftest.py"),
             False,
             False,
         )
     )
-    out.append(Entry(".pipeline/pipeline.toml", _read(TEMPLATES / "pipeline.toml"), False, True))
+    out.append(Entry(".picard/pipeline.toml", _read(TEMPLATES / "pipeline.toml"), False, True))
     return out
 
 

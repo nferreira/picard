@@ -348,7 +348,7 @@ def test_invalid_rules_fail_loudly(tmp_path, mutate, fragment):
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    (tmp_path / ".pipeline").mkdir()
+    (tmp_path / ".picard").mkdir()
     (tmp_path / "models").mkdir()
     (tmp_path / "models" / "inventory.toml").write_text(INVENTORY, encoding="utf-8")
     text = TEMPLATE.read_text(encoding="utf-8")
@@ -359,7 +359,7 @@ def repo(tmp_path, monkeypatch):
         + '[[packages]]\nname = "app"\npath = "app"\n[packages.commands]\ntest = "echo t"\n\n'
         + text[end:]
     )
-    (tmp_path / ".pipeline" / "pipeline.toml").write_text(text + RULES, encoding="utf-8")
+    (tmp_path / ".picard" / "pipeline.toml").write_text(text + RULES, encoding="utf-8")
     return tmp_path
 
 

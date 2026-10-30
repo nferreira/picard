@@ -31,14 +31,14 @@ Fields:
 
 ## Tier 0 · Pre-push
 
-`.pipeline/hooks/pre-push` runs `picard run --tier 0 --local`: the unit tests of the packages
+`.picard/hooks/pre-push` runs `picard run --tier 0 --local`: the unit tests of the packages
 your branch touched, and of everything that depends on them. It considers everything that differs
 locally (commits since the branch yours grew out of, plus uncommitted work), and the commit
 subjects pick the profile. See [simulation](simulation.md).
 It catches the obvious in seconds. It is a convenience, not a gate: `--no-verify` bypasses
 it, and CI re-checks everything.
 
-`.pipeline/hooks/commit-msg` validates each commit message as a Conventional Commit (without the
+`.picard/hooks/commit-msg` validates each commit message as a Conventional Commit (without the
 ticket ID rule, which applies to the PR title).
 
 ## Tier 1 · PR fast gate
@@ -95,7 +95,7 @@ Please never creates that tag itself.
 
 Tiers select tests by marker, so a test with no marker is invisible to tiers 0 to 3. Adopting
 a repo with thousands of tests and a handful of markers means marking them first.
-`.pipeline/templates/pytest/conftest.py` does it without touching each test (copy it to your
+`.picard/templates/pytest/conftest.py` does it without touching each test (copy it to your
 test root):
 
 - **by directory**: `tests/unit/**` is `unit`, `tests/integration/**` is `integration`,

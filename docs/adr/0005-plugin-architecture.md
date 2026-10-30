@@ -56,4 +56,4 @@ Three small interfaces, each a registry of named implementations, wired in one c
 - Rule actions (`none`, `full`, `package`, `own`, `require-review`, `run:`) are still fixed in
   `rules.py`. Their registry exists and is not used yet.
 - Plugins run arbitrary code at planning time, so a change to `[plugins]` needs the same
-  review as a workflow change (`CODEOWNERS` covers `.pipeline/`).
+  review as a workflow change (`CODEOWNERS` covers `.picard/`).

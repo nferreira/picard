@@ -27,7 +27,7 @@ runs:
         SETUP_COMMAND: ${{ fromJSON(inputs.runtime).setup_command }}
         SUITE_COMMAND: ${{ inputs.command }}
       run: |
-        # Both commands come from the repo's own .pipeline/pipeline.toml, with the same trust as
+        # Both commands come from the repo's own .picard/pipeline.toml, with the same trust as
         # its workflows. They are passed through the environment, never interpolated.
         if [ -n "$SETUP_COMMAND" ]; then bash -euo pipefail -c "$SETUP_COMMAND"; fi
         bash -euo pipefail -c "$SUITE_COMMAND"

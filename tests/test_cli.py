@@ -52,8 +52,8 @@ def repo(tmp_path, monkeypatch):
     # picard, like CI, runs git in the current directory.
     monkeypatch.chdir(tmp_path)
     git(tmp_path, "init", "-b", "main")
-    (tmp_path / ".pipeline").mkdir()
-    (tmp_path / ".pipeline" / "pipeline.toml").write_text(app_config(), encoding="utf-8")
+    (tmp_path / ".picard").mkdir()
+    (tmp_path / ".picard" / "pipeline.toml").write_text(app_config(), encoding="utf-8")
     (tmp_path / "src.py").write_text("x = 1\n", encoding="utf-8")
     git(tmp_path, "add", ".")
     git(tmp_path, "commit", "-m", "chore: init (ABC-0)")
@@ -75,7 +75,7 @@ def test_plan_json_and_github_outputs(repo, capsys, tmp_path):
         [
             "plan",
             "--config",
-            str(repo / ".pipeline" / "pipeline.toml"),
+            str(repo / ".picard" / "pipeline.toml"),
             "--tier",
             "1",
             "--base",
@@ -105,7 +105,7 @@ def test_title_and_body_come_from_environment(repo, capsys, monkeypatch):
         [
             "plan",
             "--config",
-            str(repo / ".pipeline" / "pipeline.toml"),
+            str(repo / ".picard" / "pipeline.toml"),
             "--tier",
             "2",
             "--base",
@@ -127,7 +127,7 @@ def test_local_mode_uses_merge_base_and_commit_subjects(repo, capsys, monkeypatc
 
 
 def test_run_executes_commands_and_stops_on_failure(repo, monkeypatch, capsys):
-    config = repo / ".pipeline" / "pipeline.toml"
+    config = repo / ".picard" / "pipeline.toml"
     config.write_text(
         config.read_text(encoding="utf-8").replace(
             'test = "echo test {markers}"', 'test = "exit 3"'
@@ -144,7 +144,7 @@ def test_run_executes_commands_and_stops_on_failure(repo, monkeypatch, capsys):
 
 
 def test_tier_needing_a_base_without_one_is_a_config_error(repo, capsys):
-    assert main(["plan", "--config", str(repo / ".pipeline" / "pipeline.toml"), "--tier", "1"]) == 2
+    assert main(["plan", "--config", str(repo / ".picard" / "pipeline.toml"), "--tier", "1"]) == 2
     assert "pass what changed" in capsys.readouterr().err
 
 
@@ -154,7 +154,7 @@ def test_unknown_tier_and_missing_config_exit_2(repo, capsys):
             [
                 "plan",
                 "--config",
-                str(repo / ".pipeline" / "pipeline.toml"),
+                str(repo / ".picard" / "pipeline.toml"),
                 "--tier",
                 "9",
                 "--base",
@@ -177,7 +177,7 @@ def test_unknown_tier_and_missing_config_exit_2(repo, capsys):
 )
 def test_check_title_exit_codes(repo, args, code):
     assert (
-        main(["check-title", "--config", str(repo / ".pipeline" / "pipeline.toml"), *args]) == code
+        main(["check-title", "--config", str(repo / ".picard" / "pipeline.toml"), *args]) == code
     )
 
 
@@ -189,7 +189,7 @@ def test_check_title_reads_commit_msg_file(repo, tmp_path):
             [
                 "check-title",
                 "--config",
-                str(repo / ".pipeline" / "pipeline.toml"),
+                str(repo / ".picard" / "pipeline.toml"),
                 "--file",
                 str(msg),
                 "--no-ticket",
@@ -204,7 +204,7 @@ def test_check_title_reads_commit_msg_file(repo, tmp_path):
             [
                 "check-title",
                 "--config",
-                str(repo / ".pipeline" / "pipeline.toml"),
+                str(repo / ".picard" / "pipeline.toml"),
                 "--file",
                 str(empty),
             ]
@@ -220,7 +220,7 @@ def test_summary_file_is_appended(repo, tmp_path):
         [
             "plan",
             "--config",
-            str(repo / ".pipeline" / "pipeline.toml"),
+            str(repo / ".picard" / "pipeline.toml"),
             "--tier",
             "1",
             "--base",

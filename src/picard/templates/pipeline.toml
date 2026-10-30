@@ -122,10 +122,10 @@ docs = ["**/*.md", "docs/**", "LICENSE"]
 # Any file matching nothing below demands this profile.
 default = "full"
 # Touching one of these affects every package.
-global = [".pipeline/pipeline.toml", ".github/workflows/**"]
+global = [".picard/pipeline.toml", ".github/workflows/**"]
 
 [[paths.floor]]
-globs = [".github/**", ".pipeline/pipeline.toml"]
+globs = [".github/**", ".picard/pipeline.toml"]
 profile = "infra"
 [[paths.floor]]
 globs = ["tests/**", "**/test_*.py", "**/conftest.py"]

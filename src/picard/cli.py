@@ -40,7 +40,7 @@ from picard.graph.impact import SetupError
 from picard.planner import build_plan, impact_of, render_markdown, render_text
 from picard.scaffold import ScaffoldError
 
-DEFAULT_CONFIG = ".pipeline/pipeline.toml"
+DEFAULT_CONFIG = ".picard/pipeline.toml"
 
 
 def _add_common(p: argparse.ArgumentParser) -> None:
@@ -576,7 +576,7 @@ def _cmd_scaffold(args: argparse.Namespace) -> int:
     )
     if not args.dry_run and any(r.status == "created" for r in results):
         print(
-            "picard: next: edit .pipeline/pipeline.toml and run `picard validate-config`, "
+            "picard: next: edit .picard/pipeline.toml and run `picard validate-config`, "
             "run `picard install-hooks`, then set the repository variables PICARD_REPOSITORY "
             "and PICARD_REF and the secret PICARD_TOKEN that the workflows use "
             "(see docs/adoption.md in the picard repository)"

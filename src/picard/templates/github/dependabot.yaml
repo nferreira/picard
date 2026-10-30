@@ -1,4 +1,4 @@
-# Dependabot titles are `chore(deps): ...`, which .pipeline/pipeline.toml routes to the `deps` profile
+# Dependabot titles are `chore(deps): ...`, which .picard/pipeline.toml routes to the `deps` profile
 # (dependency review, then the baseline tier). Keep the update PRs grouped so each one runs
 # the pipeline once.
 version: 2

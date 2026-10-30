@@ -29,7 +29,7 @@ PR title ──┐
            ├─▶ picard ──▶ impact ──▶ plan (JSON) ──▶ every tier reads it its own way
 changed ───┤     │         ▲
 files      │     │   graph providers + impact engine
-code graph ┘     └── .pipeline/pipeline.toml (the only file a repo edits)
+code graph ┘     └── .picard/pipeline.toml (the only file a repo edits)
 ```
 
 Workflows never decide anything. They ask `picard` for a plan and execute it, so tuning the
@@ -101,8 +101,8 @@ Pull the clone to get a newer picard. Pants is optional: see
 From the root of the repo you want to put under picard:
 
 ```sh
-picard init              # writes .github/ workflows and actions, .pipeline/hooks, .pipeline/pipeline.toml
-picard validate-config   # after editing .pipeline/pipeline.toml
+picard init              # writes .github/ workflows and actions, .picard/hooks, .picard/pipeline.toml
+picard validate-config   # after editing .picard/pipeline.toml
 picard install-hooks     # once per clone: git hooks for commit messages and pre-push
 ```
 
@@ -133,9 +133,9 @@ A repo after `picard init`:
 .github/workflows/pipeline-*.yml    one workflow per tier, plus the rc tag
 .github/actions/pipeline-*/         composite actions: plan, check-title, run-suite, extra, setup-picard
 .github/release-please/             release-please config and manifest
-.pipeline/pipeline.toml             the one file a repo edits
-.pipeline/hooks/                    commit-msg, pre-push
-.pipeline/templates/pytest/         marker plugin to copy into your test root
+.picard/pipeline.toml             the one file a repo edits
+.picard/hooks/                    commit-msg, pre-push
+.picard/templates/pytest/         marker plugin to copy into your test root
 ```
 
 Why a package and not vendored tooling: [ADR 0006](docs/adr/0006-picard-is-a-python-package.md).

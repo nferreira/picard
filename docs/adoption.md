@@ -16,11 +16,11 @@ picard init
 ```
 
 `init` adds the `pipeline-*` workflows and actions under `.github/`, the hooks under
-`.pipeline/hooks/`, and the files you own, only if they are missing: `.pipeline/pipeline.toml`,
+`.picard/hooks/`, and the files you own, only if they are missing: `.picard/pipeline.toml`,
 `.github/release-please/*`, `CODEOWNERS`, `dependabot.yaml` and the PR template. It touches
 nothing else. Review with `git status` and commit.
 
-## 2. Describe your repo in `.pipeline/pipeline.toml`
+## 2. Describe your repo in `.picard/pipeline.toml`
 
 - `[runtime]`: Python/Node version and the command that installs dependencies.
 - `[[packages]]`: one per unit, with its `lint` and `test` commands. Set `baseline = true` on
@@ -38,15 +38,15 @@ expect. The default `native` impact engine needs nothing more. To use Pants for 
 precision, set `engine = "pants"` under `[impact]` and run `picard setup`, then
 add `picard setup --check` to CI. See [configuration](configuration.md#impact).
 
-## 2b. Keep `.pipeline/templates/` out of your linters
+## 2b. Keep `.picard/templates/` out of your linters
 
-`.pipeline/templates/pytest/conftest.py` is picard's marker plugin, a file you copy into your test
+`.picard/templates/pytest/conftest.py` is picard's marker plugin, a file you copy into your test
 root and then own. Until you do, exclude the folder from tools that scan dot-folders, for example
-`[tool.ruff] extend-exclude = [".pipeline/templates"]`. pytest and eslint already skip it.
+`[tool.ruff] extend-exclude = [".picard/templates"]`. pytest and eslint already skip it.
 
 ## 3. Mark your tests
 
-Tiers select tests by marker. Copy `.pipeline/templates/pytest/conftest.py` (written by `picard init`) to your test root,
+Tiers select tests by marker. Copy `.picard/templates/pytest/conftest.py` (written by `picard init`) to your test root,
 register `unit`, `integration`, `baseline` and `slow` in `pyproject.toml` with
 `--strict-markers`, and mark the must-pass tests `@pytest.mark.baseline`. Turn on
 `PICARD_REQUIRE_MARKERS=1` once the backlog is marked. See [tiers](tiers.md#the-marker-prerequisite).

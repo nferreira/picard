@@ -65,8 +65,8 @@ def config_text() -> str:
     )
     text = text[:start] + discover + text[end:]
     return text.replace(
-        'global = [".pipeline/pipeline.toml", ".github/workflows/**"]',
-        'global = [".pipeline/pipeline.toml", ".github/workflows/**", "uv.lock"]',
+        'global = [".picard/pipeline.toml", ".github/workflows/**"]',
+        'global = [".picard/pipeline.toml", ".github/workflows/**", "uv.lock"]',
     )
 
 
@@ -75,7 +75,7 @@ def repo(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     git(tmp_path, "init", "-b", "main")
     files = {
-        ".pipeline/pipeline.toml": config_text(),
+        ".picard/pipeline.toml": config_text(),
         "uv.lock": UV_LOCK,
         "package.json": json.dumps({"name": "root", "private": True}),
         "pnpm-workspace.yaml": "packages:\n  - 'packages/*'\n  - 'apps/*'\n",
@@ -231,7 +231,7 @@ def test_bare_simulate_uses_the_current_branch(repo, capsys):
 
 
 def test_simulate_run_executes_tiers_in_order_and_stops_at_a_failure(repo, capsys):
-    config = repo / ".pipeline" / "pipeline.toml"
+    config = repo / ".picard" / "pipeline.toml"
     config.write_text(
         config.read_text().replace("echo test {package} -m", "echo ran {package} -m", 1)
     )
@@ -251,7 +251,7 @@ def test_simulate_run_executes_tiers_in_order_and_stops_at_a_failure(repo, capsy
 
 def test_run_dry_run_prints_but_does_not_execute(repo, capsys, tmp_path):
     marker = tmp_path / "executed"
-    config = repo / ".pipeline" / "pipeline.toml"
+    config = repo / ".picard" / "pipeline.toml"
     config.write_text(config.read_text().replace("echo test {package} -m", f"touch {marker} #", 1))
     assert (
         main(["run", "--tier", "1", "--files", ENCODER, "--title", "fix: x (ABC-1)", "--dry-run"])

@@ -12,7 +12,7 @@ pytestmark = pytest.mark.integration
 
 WORKFLOW = ".github/workflows/pipeline-pr.yml"
 ACTION = ".github/actions/pipeline-plan/action.yml"
-CONFIG = ".pipeline/pipeline.toml"
+CONFIG = ".picard/pipeline.toml"
 CODEOWNERS = ".github/CODEOWNERS"
 
 
@@ -31,7 +31,7 @@ def test_init_writes_the_templates(repo):
     for path in (WORKFLOW, ACTION, CONFIG, CODEOWNERS, ".github/dependabot.yaml"):
         assert (repo / path).is_file(), path
     assert (repo / ".github/actions/pipeline-setup-picard/action.yml").is_file()
-    assert (repo / ".pipeline/templates/pytest/conftest.py").is_file()
+    assert (repo / ".picard/templates/pytest/conftest.py").is_file()
 
 
 def test_the_starter_config_it_writes_is_valid(repo):
@@ -42,11 +42,11 @@ def test_the_starter_config_it_writes_is_valid(repo):
 def test_hooks_are_executable_and_ask_for_picard_when_it_is_missing(repo):
     run(repo, "init")
     for hook in ("commit-msg", "pre-push"):
-        path = repo / ".pipeline/hooks" / hook
+        path = repo / ".picard/hooks" / hook
         assert os.access(path, os.X_OK)
         text = path.read_text()
         assert "command -v picard" in text and "exec picard " in text
-        assert ".pipeline/bin" not in text
+        assert ".picard/bin" not in text
 
 
 def test_a_second_run_changes_nothing(repo, capsys):
@@ -88,7 +88,7 @@ def test_a_stale_file_in_a_tool_owned_action_is_removed_and_other_files_are_kept
 
 def test_dry_run_writes_nothing(repo):
     assert run(repo, "init", "--dry-run") == 0
-    assert not (repo / ".github").exists() and not (repo / ".pipeline").exists()
+    assert not (repo / ".github").exists() and not (repo / ".picard").exists()
 
 
 def test_it_refuses_to_scaffold_outside_a_git_repository(tmp_path, capsys):
@@ -105,7 +105,7 @@ def test_install_hooks_points_git_at_the_scaffolded_hooks(repo, capsys):
         text=True,
         check=True,
     ).stdout.strip()
-    assert configured == ".pipeline/hooks"
+    assert configured == ".picard/hooks"
 
 
 def test_install_hooks_needs_init_first(repo, capsys):

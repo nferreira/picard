@@ -3,7 +3,7 @@ name: Pipeline · PR
 # Tier 1, the fast gate: affected packages only, unit and integration markers.
 # Tier 2, the baseline: the must-pass list from path rules, the baseline marker. It starts
 # only after tier 1 is green, so a broken PR fails cheap and early.
-# Both read one plan built by .pipeline/ from the PR title and the changed files.
+# Both read one plan built by .picard/ from the PR title and the changed files.
 #
 # Branch protection requires exactly one check from this workflow: `pipeline-gate`.
 

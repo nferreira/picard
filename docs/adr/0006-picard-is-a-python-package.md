@@ -4,7 +4,7 @@ Status: accepted. Supersedes [0002](0002-vendored-template.md).
 
 ## Context
 
-ADR 0002 copied the whole tool into every host repo under `.pipeline/`, because the template
+ADR 0002 copied the whole tool into every host repo under `.picard/`, because the template
 repository's root was copied into repos that already use `src/`, `tests/`, `docs/` and
 `pyproject.toml`. That kept hosts self-contained, but picard grew into a real program (graph
 providers, impact engines, executors, plugins, a Pants setup) with its own tests and docs, and
@@ -16,7 +16,7 @@ own layout was bent around not colliding with a host.
 picard is a normal Python package in its own repository, with a `picard` command.
 
 - **Layout.** `src/picard/`, `tests/`, `docs/`, `pyproject.toml`, `justfile`, and its own CI.
-  No `.pipeline/` tree and no `bin/` scripts. Runtime dependencies stay empty (standard
+  No `.picard/` tree and no `bin/` scripts. Runtime dependencies stay empty (standard
   library only, Python 3.11+), because picard is a dependency of every repo's CI.
 - **Installing.** A developer clones the picard repository and installs it once:
   `uv tool install --editable <clone>`. CI installs a pinned ref in a composite action
@@ -30,7 +30,7 @@ picard is a normal Python package in its own repository, with a `picard` command
   Files picard owns are replaced. Files the repo owns (`pipeline.toml`, release-please config,
   CODEOWNERS, Dependabot, the PR template) are written only when missing and never
   overwritten. Nothing else is touched.
-- **The host keeps two things:** its config at `.pipeline/pipeline.toml` and the scaffolded
+- **The host keeps two things:** its config at `.picard/pipeline.toml` and the scaffolded
   `pipeline-*` workflows and actions. Hosts own their workflow files, so a change to what CI
   does is still a reviewed diff in the host.
 - **Hooks** call `picard` and say how to install it when it is missing.

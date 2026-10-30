@@ -216,8 +216,8 @@ def configured(repo):
         'name = "app"\npath = "."\nbaseline = false',
         'name = "app"\npath = "."\nbaseline = true',
     )
-    (repo / ".pipeline").mkdir()
-    (repo / ".pipeline" / "pipeline.toml").write_text(text, encoding="utf-8")
+    (repo / ".picard").mkdir()
+    (repo / ".picard" / "pipeline.toml").write_text(text, encoding="utf-8")
     git(repo, "add", "-A")
     git(repo, "commit", "-m", "chore: pipeline (A-9)")
     git(repo, "checkout", "-b", "feature")

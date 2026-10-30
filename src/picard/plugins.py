@@ -6,7 +6,7 @@ configuration, so they carry the same trust as its workflows: review edits to th
 
     [plugins]
     modules = ["acme_picard"]                  # importable from the environment
-    paths   = [".pipeline/plugins/bazel.py"]   # loaded from a file in the repository
+    paths   = [".picard/plugins/bazel.py"]   # loaded from a file in the repository
 """
 
 from __future__ import annotations

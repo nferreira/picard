@@ -10,7 +10,7 @@ Working notes for AI sessions in this repository.
   and everything it scaffolds must not name any organisation, team, company repository or
   ticket prefix. Read it with `importlib.resources`, never a path relative to `__file__`.
 - Files written into a host live only under `.github/` (workflows and actions prefixed
-  `pipeline-`) and `.pipeline/`. `picard init` and `picard update` replace the files picard
+  `pipeline-`) and `.picard/`. `picard init` and `picard update` replace the files picard
   owns and never overwrite the files the repo owns. Keep that split and its tests.
 - picard is affected-based CI: anything that narrows what runs must fail closed. An engine,
   provider or rule may widen the answer and never narrow it. Docs start at `docs/concepts.md`,

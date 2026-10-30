@@ -1,6 +1,6 @@
 # pipeline.toml reference
 
-The file is `.pipeline/pipeline.toml`. Validate after every edit, from the repo root:
+The file is `.picard/pipeline.toml`. Validate after every edit, from the repo root:
 
 ```sh
 picard validate-config
@@ -195,7 +195,7 @@ a `register(registries)` function.
 ```toml
 [plugins]
 modules = ["acme_picard"]                  # importable from the environment
-paths   = [".pipeline/plugins/bazel.py"]   # loaded from a file in the repository
+paths   = [".picard/plugins/bazel.py"]   # loaded from a file in the repository
 ```
 
 Plugins come from the repo's own configuration, so they carry the same trust as its workflows:
