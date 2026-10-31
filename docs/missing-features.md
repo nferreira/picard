@@ -2,7 +2,8 @@
 
 picard decides what CI runs for a change. This page lists what production-grade tools in the
 same space do that picard does not, and says for each whether it makes sense to bring in
-**without rebuilding what a tool already does**. It is a decision aid, not a commitment.
+**without rebuilding what a tool already does**. It started as a decision aid. Items 1 to 11
+and 17 are now built. The others stay decisions, with no code behind them.
 
 Surveyed on 2026-10-30 from each project's own documentation: Nx, Turborepo, Pants, Bazel
 (with bazel-diff), moon, Jest, pytest-impacted, and the commercial test-selection services
@@ -28,13 +29,15 @@ Not a gap, so not listed below.
   from the package managers' own manifests. Turborepo and moon work at about this granularity.
   Nx (since version 24, by default) selects at task level from each task's declared inputs, and
   Pants at target and file level from inferred imports, so both are finer than picard's native
-  engine. Item 7 is that gap.
+  engine. Item 7 (`test_paths`) closes the part of that gap that costs most: a test-only change
+  no longer runs the dependents.
 - **A reason for every decision**: `why` chains, `via <engine>` labels, a Mermaid graph and a
   `--debug` trace (Nx `--explain`, bazel-diff `explain`).
 - **Local simulation** of a change that is not made yet (`--files`), of a branch (`--local`) and
   of the index (`--staged`), against the right parent branch.
-- **Pluggable impact engines with a safe fallback**: Pants is an engine, and a failing or
-  missing engine widens the answer and never narrows it.
+- **Pluggable impact engines with a safe fallback**: Pants is an engine (and, since item 1, so
+  are Nx, Turborepo, moon and bazel-diff), and a failing or missing engine widens the answer and
+  never narrows it.
 - **Beyond the others:** the PR title picks how much to verify, and one gate job makes skipped
   required checks safe. None of the tools below does either. Rule actions that run a named
   command with values captured from the path and checked against an inventory are also not
@@ -44,63 +47,72 @@ Not a gap, so not listed below.
 
 ## Summary
 
-| # | Feature | Seen in | Verdict | Effort |
-|---|---|---|---|---|
-| 1 | Impact engines for Nx, Turborepo, moon and bazel-diff | Nx, Turborepo, moon, Bazel | **Integrate** (Nx fits today, the rest need base and head passed to engines) | S for Nx, M once for the rest |
-| 2 | Lockfile-aware narrowing | Nx | **Adopt** | M |
-| 3 | Test sharding by file or timing | Pants, Nx, Buildkite, Jest | **Integrate** | M |
-| 4 | A first-class "list the affected packages" command | Turborepo, moon, Nx, Pants | **Adopt** | S |
-| 5 | Shallow clone and unknown base handling | Turborepo, Nx | **Adopt** | S |
-| 6 | Force a full run, mark a package unskippable | Datadog | **Adopt** | S |
-| 7 | A test-only change does not propagate to dependents | Nx, Pants | **Adopt** | S to M |
-| 8 | Executors that delegate to a build tool with a cache | Pants, Nx, Turborepo, Bazel | **Integrate** | M |
-| 9 | Undeclared dependency detection | Nx (gotcha), Pants | **Integrate** | S to M |
-| 10 | Flaky retry and quarantine | Nx, Buildkite, Develocity | **Integrate** | S |
-| 11 | Test-level selection | Jest, pytest-impacted, Datadog, Develocity | **Integrate**, opt-in | M |
-| 12 | Incremental merge queue tier | GitHub merge queue | **Defer** | M |
-| 13 | Base = last green commit | Nx | **Defer** | S to M |
-| 14 | Cross-package task ordering | Nx, Turborepo, Bazel, Pants | **Skip** (delegate, see 8) | L |
-| 15 | Result caching and remote cache | Nx, Turborepo, Pants, Bazel | **Skip** (delegate, see 8) | L |
-| 16 | Distributed execution | Nx, Bazel, Pants | **Skip** | L |
-| 17 | Sticky PR plan comment, run metrics | Nx Cloud, Buildkite | **Adopt**, small | S to M |
-| 18 | Per-package releases in a monorepo | Nx, changesets, release-please | **Defer** | M |
-| 19 | Self-healing CI, flaky analytics, conformance, code owners | Nx Cloud | **Skip** | n/a |
-| 20 | Module boundary enforcement | Nx, Turborepo | **Skip** (as an extra) | S |
-| 21 | Daemon, watch mode, hash service | Pants, Nx, Turborepo, bazel-diff | **Skip** | M |
+| # | Feature | Seen in | Verdict | Effort | Status |
+|---|---|---|---|---|---|
+| 1 | Impact engines for Nx, Turborepo, moon and bazel-diff | Nx, Turborepo, moon, Bazel | **Integrate** | S for Nx, M once for the rest | Built |
+| 2 | Lockfile-aware narrowing | Nx | **Adopt** | M | Built |
+| 3 | Test sharding by file or timing | Pants, Nx, Buildkite, Jest | **Integrate** | M | Built (splitter default, no timings) |
+| 4 | A first-class "list the affected packages" command | Turborepo, moon, Nx, Pants | **Adopt** | S | Built |
+| 5 | Shallow clone and unknown base handling | Turborepo, Nx | **Adopt** | S | Built |
+| 6 | Force a full run, mark a package unskippable | Datadog | **Adopt** | S | Built |
+| 7 | A test-only change does not propagate to dependents | Nx, Pants | **Adopt** | S to M | Built |
+| 8 | Executors that delegate to a build tool with a cache | Pants, Nx, Turborepo, Bazel | **Integrate** | M | Built |
+| 9 | Undeclared dependency detection | Nx (gotcha), Pants | **Integrate** | S to M | Built |
+| 10 | Flaky retry and quarantine | Nx, Buildkite, Develocity | **Integrate** | S | Built (retries; quarantine is the marker) |
+| 11 | Test-level selection | Jest, pytest-impacted, Datadog, Develocity | **Integrate**, opt-in | M | Built |
+| 12 | Incremental merge queue tier | GitHub merge queue | **Defer** | M | Decision, no code |
+| 13 | Base = last green commit | Nx | **Defer** | S to M | Decision, no code (a recipe) |
+| 14 | Cross-package task ordering | Nx, Turborepo, Bazel, Pants | **Skip** (delegate, see 8) | L | Decision, served by 8 |
+| 15 | Result caching and remote cache | Nx, Turborepo, Pants, Bazel | **Skip** (delegate, see 8) | L | Decision, served by 8 |
+| 16 | Distributed execution | Nx, Bazel, Pants | **Skip** | L | Decision, no code |
+| 17 | Sticky PR plan comment, run metrics | Nx Cloud, Buildkite | **Adopt**, small | S to M | Built |
+| 18 | Per-package releases in a monorepo | Nx, changesets, release-please | **Defer** | M | Decision, no code |
+| 19 | Self-healing CI, flaky analytics, conformance, code owners | Nx Cloud | **Skip** | n/a | Decision, no code |
+| 20 | Module boundary enforcement | Nx, Turborepo | **Skip** (as an extra) | S | Decision, no code (a recipe) |
+| 21 | Daemon, watch mode, hash service | Pants, Nx, Turborepo, bazel-diff | **Skip** | M | Decision, no code |
 
 ## The items
 
-Every item has the same four parts: what the feature is, **Our solution**, and **How it will be
+Every item has the same three parts: what the feature is, **Our solution**, and **How it will be
 used**. In the examples, `# today` means it works now and `# planned` means the command or key
-does not exist yet and is the proposed design. Output is illustrative unless it says it is real.
+does not exist and is only a proposed design. Output is illustrative unless it says it is real,
+and each real example says where it was run.
 The configuration lives in `.picard/pipeline.toml`.
 
 ### 1. Impact engines for the tools people already run
 
-Nx (`nx show projects --affected`), Turborepo (`turbo query affected`), moon
-(`moon query projects --affected`) and bazel-diff (`get-impacted-targets`) each compute an
+Nx (`nx show projects --affected`), Turborepo (`turbo query affected`, `turbo ls --affected`),
+moon (`moon query projects --affected`) and bazel-diff (`get-impacted-targets`) each compute an
 affected set with their own, more precise graph. Reusing them beats copying their graph logic,
-but the interface matters, and only one of the four fits picard's engine as it is today:
+but the interface matters. Before this item an engine received only a list of files, which fits
+one of the four:
 
-| Tool | What it takes | Fits the current engine (a list of files)? |
+| Tool | What it takes | Fits a list of files? |
 |---|---|---|
 | Nx | `--base`/`--head`, or `--files` when there is no git | Yes. It can answer `picard simulate --files`. |
 | Turborepo | `--base` and `--head` git refs (or `TURBO_SCM_BASE` and `TURBO_SCM_HEAD`). No file list is documented. | No |
-| moon | Changed files from the VCS (`git status`). The page does not document base, head or a file list. | No, as far as the docs say |
+| moon | Changed files from the VCS (`git status`). The page does not document base, head or a file list. | No, as far as the docs say. picard sends the files on stdin anyway (below), unverified. |
 | bazel-diff | Two checked-out revisions, hashed separately. `--modified-filepaths` only speeds that up and must be a superset of what changed. | No |
 
 **Our solution**
 
-Verdict: **Integrate**. Effort: S for Nx, then M once for the rest.
+Verdict: **Integrate**. Effort: S for Nx, then M once for the rest. Built.
 
-1. Add an `nx` impact engine on the current interface, like the `pants` engine: it asks Nx for the
-   affected projects, hands every file Nx does not own to the fallback, and widens the answer on
-   any failure. `picard doctor` checks that Nx is installed.
-2. Change the engine interface so an engine also receives the base and head when picard has
-   them (`--base`, `--local`). Then add `turbo`, `moon` and `bazel-diff` engines that need them.
-3. For `--files`, where no git change exists, a git-based engine cannot answer. The native engine
+1. Engines receive the change's revisions (base, head, uncommitted files) when picard has them
+   (`--base`, `--local`), as `self.revisions` ([ADR 0007](adr/0007-engines-receive-the-change-revisions.md)).
+2. `nx`, `turbo`, `moon` and `bazel-diff` engines share one base: files a package the tool knows
+   owns go to the tool, the rest and any uncommitted files to the fallback, picard's graph adds
+   the owners of those files and their dependents, and any failure, timeout or unexpected output hands the whole question to the
+   fallback. `picard doctor` checks that the tool is installed. Nx asks with `--base`/`--head`
+   or `--files`, Turborepo runs `turbo ls --affected --output=json` with `TURBO_SCM_BASE` and
+   `TURBO_SCM_HEAD`, moon gets the files on stdin in the shape `moon query changed-files`
+   prints, and bazel-diff hashes the base in a temporary git worktree and never relies on
+   `--modified-filepaths`.
+3. For `--files`, where no git change exists, a git-based engine cannot answer. The fallback
    answers instead and the plan carries a note, so `picard simulate --files` and CI can differ for
    a package, and `--debug` shows exactly where.
+
+The details are in [configuration](configuration.md#impact).
 
 **How it will be used**
 
@@ -116,8 +128,8 @@ Illustrative (the tools were tested with fakes, not run for real):
 
 ```sh
 picard doctor                                       # today: picard: ok: the 'nx' impact engine is ready
-picard simulate --files libs/ui/src/button.ts       # today: asks `nx show projects --affected --files=...`; packages are marked `via nx`
-picard plan --tier 1 --base origin/main --format text   # today: asks `nx show projects --affected --base=<merge-base> --head=HEAD`
+picard simulate --files libs/ui/src/button.ts       # today: asks `nx show projects --affected --files=... --json`; packages are marked `via nx`
+picard plan --tier 1 --base origin/main --format text   # today: asks `nx show projects --affected --base=<merge-base> --head=HEAD --json`
 ```
 
 For a git-based tool:
@@ -133,28 +145,35 @@ picard simulate --files apps/web/src/a.ts               # today, illustrative ou
 # ! turbo answers from git refs only: the native engine answered
 ```
 
-When the tool is missing or fails, the fallback answers everything (illustrative output):
+When the tool is missing or fails, the fallback answers for every file (today, real output from
+a uv workspace with no Nx installed):
 
 ```sh
-picard simulate --files libs/ui/src/button.ts
-# picard: warning: Nx is not installed: 'nx' was not found. Using the native engine instead. ...
-# ! Nx is not installed: 'nx' was not found; the native engine answered
+picard doctor
+# picard: warning: Nx is not installed: 'nx' was not found
+# picard: for install steps run: picard doctor --how-to-install      (exit 1)
+
+picard affected --files packages/core/src/mod.py --format json
+# picard: warning: Nx is not installed: 'nx' was not found. Using the native engine instead. To see how to install it, run: picard doctor --how-to-install
+#   ... "notes": ["Nx is not installed: 'nx' was not found; the native engine answered"]
 ```
 
 ### 2. Lockfile-aware narrowing
 
-Today any change to a lockfile affects every package. Nx narrows this with
+A lockfile is a global file: any change to it affects every package. Nx narrows this with
 `projectsAffectedByDependencyUpdates: "auto"`, so only the projects whose resolved dependencies
 changed are affected. Without it every Dependabot bump runs everything.
 
 **Our solution**
 
 Verdict: **Adopt**. Effort: M. No tool provides this for picard, because it is the decision layer.
+Built, opt-in per lockfile under `[lockfiles] narrow`.
 
-- When a lockfile changed, read its old version from the base (`git show <base>:<path>`) and the
-  new one from the working tree, find the dependencies whose resolved version changed, and map
-  them to the packages that depend on them. The lockfile already records who depends on what.
-- picard is standard library only, so start with the lockfiles it can parse without a
+- When a listed lockfile changed, read its old version at the merge base and the new one at the
+  head (the working tree for a lockfile `--local` finds uncommitted), find the external
+  packages whose resolved version, source or dependencies changed, and follow the lockfile's own
+  edges to the workspace members that use them. Those members and their dependents are affected.
+- picard is standard library only, so it reads the lockfiles it can parse without a
   dependency: `uv.lock` and `Cargo.lock` (TOML) and `package-lock.json` (JSON).
   `pnpm-lock.yaml` and `yarn.lock` need a parser picard does not have, so they stay fail-closed
   and keep running everything.
@@ -166,24 +185,30 @@ Verdict: **Adopt**. Effort: M. No tool provides this for picard, because it is t
 
 ```toml
 # .picard/pipeline.toml           # today
-[paths]
-global = [".picard/pipeline.toml", ".github/workflows/**"]   # lockfiles are no longer listed here
-
 [lockfiles]
 narrow = ["uv.lock", "Cargo.lock", "**/package-lock.json"]   # anything else stays "run everything"
 ```
 
+A listed lockfile is narrowed even if `[paths] global` also matches it, so the existing
+`global` list can stay as it is.
+
 ```sh
-# A Dependabot PR bumps one library          # today, real output from a three-package uv workspace
+# A Dependabot-style PR: `uv lock -P httpx` moved httpx 0.27.0 -> 0.28.1 and dropped sniffio,
+# and uv.lock is the only changed file.  # today, real output (a uv workspace: core uses httpx,
+# api depends on core, web does not)
 picard plan --tier 1 --base main \
   --title "chore(deps): bump httpx from 0.27 to 0.28 (ABC-9)" --format text
-#   packages: core, api
+# tier 1 (pr-fast-gate)
+#   profile: deps   release: none
+#   packages: api, core
+#   markers: unit or integration
 #   impact: api is affected through api -> core (via lockfile)
 #   impact: core owns a changed file (via lockfile)
-#   warning: uv.lock changed httpx 0.27.0 -> 0.28.1: reaches 2 of 3 packages (core, api)
+#   ...
+#   warning: uv.lock changed httpx 0.27.0 -> 0.28.1, sniffio 1.3.1 -> none: reaches 2 of 3 packages (api, core)
 
-# The same lockfile without a commit range (--files) # today, real output
-#   packages: core, api, web
+# The same lockfile without a commit range (--files)   # today, real output
+#   packages: api, core, web
 #   impact: everything is affected: uv.lock cannot be attributed to packages
 #   warning: uv.lock changed and cannot be attributed to packages (lockfile narrowing needs --base or --local): running everything
 ```
@@ -191,7 +216,10 @@ picard plan --tier 1 --base main \
 `pnpm-lock.yaml` and `yarn.lock` are rejected under `narrow` and stay in `[paths] global`. A
 new or deleted lockfile, one that does not parse, a bump that reaches a workspace member that is
 not a picard package (such as the uv workspace root's dev tools), a change used by no member and
-a hash-only change all run everything with the reason in the warning.
+a hash-only change all run everything with the reason in the warning. In a copy of the demo,
+moving its root dev dependency `ruff` with `uv lock -P` runs all seven packages with
+`warning: uv.lock changed and cannot be attributed to packages ('<root project>' is not a picard package): running everything`
+(real output, the root project's name replaced).
 
 ### 3. Test sharding
 
@@ -201,7 +229,7 @@ end-to-end tests by file (the atomizer), Buildkite splits by recorded timings, a
 
 **Our solution**
 
-Verdict: **Integrate**. Effort: M. Already on the [roadmap](improvements.md).
+Verdict: **Integrate**. Effort: M. Built, except balancing by timings.
 
 - A `shards = N` key per package expands a suite into N matrix jobs. picard's plan is already a
   matrix, so this is a plan field and nothing else changes in the workflows.
@@ -209,8 +237,8 @@ Verdict: **Integrate**. Effort: M. Already on the [roadmap](improvements.md).
   the pnpm and npm executors, `--test-shard` for Pants. picard never splits tests itself. A
   Vitest repo writes a `test` command with a `{shard}` placeholder, because Vitest's flags were
   not verified.
-- Balance by recorded duration later, from the nightly run's timing file. The first version
-  splits by the splitter's default.
+- Shards split by the splitter's default. Balancing by recorded duration, from the nightly
+  run's timing file, is not built and stays on the [roadmap](improvements.md).
 - A local `picard run` runs the whole suite once, because shards exist to parallelise CI.
 
 **How it will be used**
@@ -247,9 +275,9 @@ only the affected apps, lint only the affected packages. picard has the data in
 
 **Our solution**
 
-Verdict: **Adopt**. Effort: S.
+Verdict: **Adopt**. Effort: S. Built.
 
-Add `picard affected` with the same change sources as `plan` (`--files`, `--base`, `--local`,
+`picard affected` takes the same change sources as `plan` (`--files`, `--base`, `--local`,
 `--staged`) and a stable output: `names`, `paths`, `json`, and `matrix` (GitHub's
 `{"include":[...]}` shape). The JSON shape is documented and versioned like the plan's. It
 extends picard past tests: any step can use the answer.
@@ -291,17 +319,19 @@ Build and deploy only what changed:
 
 Turborepo falls back to running all tasks on a shallow clone, and Nx needs full history. picard's
 workflows check out full history, but run elsewhere (a shallow CI clone, a base that is not
-fetched) it stops with a raw `git diff ... unknown revision` error and exit status 2. That is
-safe, because the job fails, but it is not friendly. Checked on 2026-10-30 with a depth-1 clone.
+fetched) it used to stop with a raw `git diff ... unknown revision` error and exit status 2.
+That is safe, because the job fails, but it is not friendly. Checked on 2026-10-30 with a
+depth-1 clone.
 
 **Our solution**
 
-Verdict: **Adopt**. Effort: S.
+Verdict: **Adopt**. Effort: S. Built.
 
-Detect `git rev-parse --is-shallow-repository` and a base that is not reachable. Try to fetch
-the base once (`git fetch --depth` on that commit). If that fails, follow `[git] unknown_base`:
+When the base does not resolve, or its merge base with the head cannot be computed,
+picard fetches it once (`git fetch --no-tags origin <base>`, with `--unshallow` in a shallow
+clone, only when a remote `origin` exists). If that fails, it follows `[git] unknown_base`:
 `full` (default) runs everything with a clear warning, which fits fail-closed, and `fail`
-keeps today's error for teams that prefer a red job.
+keeps the old red job, with a clear message and exit status 2.
 
 **How it will be used**
 
@@ -347,7 +377,7 @@ is never skipped".
 
 **Our solution**
 
-Verdict: **Adopt**. Effort: S.
+Verdict: **Adopt**. Effort: S. Built.
 
 - A PR label (default `ci:full`) is a plan input that makes every package affected. Labels can
   only raise the bar, as titles can.
@@ -430,12 +460,12 @@ nothing imports a test file. In the demo today (real output), changing
 
 **Our solution**
 
-Verdict: **Adopt**. Effort: S to M.
+Verdict: **Adopt**. Effort: S to M. Built.
 
-Add `test_paths` globs to a package. A change that only touches those files affects the owning
-package and not its dependents. A path that matches nothing keeps today's behaviour, and a
-change that touches both test and source files affects dependents as usual. The Pants engine
-already behaves this way for Python.
+`test_paths` globs on a package (or a `[[discover]]` block) name its test files. A change that
+only touches those files affects the owning package and not its dependents. A file that matches
+nothing keeps the old behaviour, and a change that touches both test and source files affects
+dependents as usual. The Pants engine already behaves this way for Python.
 
 **How it will be used**
 
@@ -445,18 +475,25 @@ already behaves this way for Python.
 name       = "component-def"
 path       = "packages/component-def"
 test_paths = ["tests/**", "**/test_*.py", "**/conftest.py"]
+
+[[discover]]                      # or for every package a block finds
+provider   = "uv"
+test_paths = ["tests/**"]
 ```
 
 ```sh
-picard simulate --files packages/component-def/tests/unit/test_formatter.py
-# without test_paths (native engine, real):  affected: component-def, some-api
-# with test_paths (native engine), today:    affected: component-def
-#   WHY  component-def owns a changed file (test files only: dependents are not affected) (via native)
+# today, real output: a copy of the demo with test_paths = ["tests/**"] on its uv block,
+# native engine, a commit that changes only that test file
+picard affected --base main
+# component-def
+picard simulate --base main --tiers 1 --title "test(component-def): cover formatter (DEMO-1)"
+# WHY
+#   component-def owns a changed file (test files only: dependents are not affected) (via native)
+# (without test_paths, the native engine also runs some-api)
 ```
 
-The WHY line comes from a real run in a scratch repository with the same layout, with the
-package names changed to match (there they were `core` and its dependent `api`). A change that also touches a source file, or a file `test_paths` does not
-match, runs the dependents as before, and so does any error while matching.
+A change that also touches a source file, or a file `test_paths` does not match, runs the
+dependents as before.
 
 ### 8. Executors that delegate to a tool with a cache
 
@@ -466,9 +503,9 @@ cache.
 
 **Our solution**
 
-Verdict: **Integrate**. Effort: M. This one change answers items 14 and 15.
+Verdict: **Integrate**. Effort: M. Built. This one change answers items 14 and 15.
 
-Add executors that hand a package's suite to the tool: `pants` (`pants test {path}::`), `turbo`
+Executors hand a package's suite to the tool: `pants` (`pants test {path}::`), `turbo`
 (`turbo run test --filter={package}`) and `nx` (`nx run {package}:test`). picard still decides
 which packages run at each tier. The tool then applies its local and remote cache and its task
 ordering. An explicit command in `[packages.commands]` still wins over an executor.
@@ -506,9 +543,9 @@ pants test --test-shard=0/2 packages/component-def::
 pants test --test-shard=1/2 packages/component-def::
 #   ✓ packages/component-def/tests/integration/test_roundtrip.py:tests succeeded in 0.24s.
 
-# Turborepo or Nx instead (today, generated commands; the tools were not run):
-#   @demo/ui-kit:test    turbo run test --filter=@demo/ui-kit
-#   ui-kit:test          nx run ui-kit:test
+# Turborepo or Nx on the npm block instead (today, real generated commands; the tools were not run):
+#   @demo/ui-kit:test           turbo run test --filter=@demo/ui-kit
+#   @demo/ui-kit:test           nx run @demo/ui-kit:test
 ```
 
 ### 9. Undeclared dependency detection
@@ -519,7 +556,7 @@ nobody declared is a silent under-test.
 
 **Our solution**
 
-Verdict: **Integrate**. Effort: S to M.
+Verdict: **Integrate**. Effort: S to M. Built.
 
 Reuse the checkers that exist: `deptry` for Python and `knip` for JavaScript. They
 run as a named check that a tier lists in `run`, which is a mechanism picard already has. picard
@@ -528,7 +565,7 @@ JavaScript executors a `deps` suite, both off until a tier lists them.
 
 **How it will be used**
 
-Works today with a hand-written command:
+A hand-written command works, as it did before this item:
 
 ```toml
 # .picard/pipeline.toml           # today
@@ -543,7 +580,7 @@ run = ["lint", "test", "deps"]
 picard plan --tier 1 --base origin/main --format text   # today: `deps` appears as a suite per affected package
 ```
 
-Today the default is built in, so only the tier line is needed: the `pytest` and `uv-pytest`
+The default is now built in, so only the tier line is needed: the `pytest` and `uv-pytest`
 executors run `deptry <path>` and the `pnpm` and `npm` executors run
 `knip --include dependencies,unlisted --workspace <path>`. Set `deps_checker` under
 `[executors.<name>]` to run something else. picard uses knip rather than depcheck, which is no
@@ -567,7 +604,7 @@ need Nx Cloud). Buildkite and Develocity track and quarantine flaky tests.
 
 **Our solution**
 
-Verdict: **Integrate**. Effort: S. Already on the [roadmap](improvements.md).
+Verdict: **Integrate**. Effort: S. Built (retries).
 
 Take the cheap, local half. A `flaky` marker keeps a test out of the blocking tiers, and an
 executor `retries` option adds the tool's own retry flag (`--reruns` from pytest-rerunfailures,
@@ -591,7 +628,7 @@ retries = 2                                           # adds --reruns 2 to the t
 ```
 
 ```sh
-picard simulate --files apps/some-api/src/some_api/handlers.py --tiers 4 --commands   # today, real output:
+picard simulate --files apps/some-api/src/some_api/handlers.py --tiers 4 --commands   # today, real output (trimmed):
 # tier 4 (nightly) commands:
 #   some-api:test               pytest apps/some-api --reruns 2
 #   @demo/ui-kit:test           pnpm --filter @demo/ui-kit run test
@@ -609,16 +646,15 @@ coverage-based selection.
 
 **Our solution**
 
-Verdict: **Integrate**, opt-in. Effort: M. The least certain payoff.
+Verdict: **Integrate**, opt-in. Effort: M. The least certain payoff. Built.
 
 None of this is picard's to build. An opt-in executor option appends the tool's flag, and a
 tier turns it on with `selection = true`, meant for tiers 0 and 1. A tier with
 `compare = "none"` cannot select, so the starter's tiers 3 and 4 stay the full-run safety net.
 It needs a committed git range: `--base`, or `--local` with no uncommitted files, because
 pytest-impacted's branch mode ignores uncommitted files and would select fewer tests than the
-change needs. Without
-one, and in a forced full run (`ci:full`), whole suites run and the plan warns. The base passed
-is the merge-base commit.
+change needs. Without one, whole suites run and the plan warns. A forced full run (`ci:full`, an
+unknown base) never selects, and needs no warning. The base passed is the merge-base commit.
 
 **How it will be used**
 
@@ -797,7 +833,7 @@ that adopts Pants or Bazel remote execution gets it through the executors in ite
 **How it will be used**
 
 ```sh
-picard plan --tier 1 --base origin/main --format json | jq -c '.suites | length'   # today: how many jobs the matrix will have
+picard plan --tier 1 --base origin/main --format json | jq -c '.metrics.jobs'   # today: how many jobs the matrix will have
 ```
 
 ```yaml
@@ -809,18 +845,17 @@ strategy:
 ### 17. A plan comment on the PR, and run metrics
 
 bazel-diff's `explain` can post a Mermaid graph to a PR comment, and the commercial CI products
-show run history and analytics. picard has the job summary and a Mermaid format, but nothing
-posts where reviewers look, and nothing records what affected-based CI saved.
+show run history and analytics. picard had the job summary and a Mermaid format, but nothing
+posted where reviewers look, and nothing recorded what affected-based CI saved.
 
 **Our solution**
 
-Verdict: **Adopt**, small. Effort: S to M. The comment is already on the
-[roadmap](improvements.md).
+Verdict: **Adopt**, small. Effort: S to M. Built.
 
-- `picard plan` can write the plan as a Markdown comment and as a small metrics file.
-  A separate job with only `pull-requests: write` and no PR code posts or updates one sticky
-  comment.
-- The metrics file records packages total and selected, suites total and selected, and the
+- `picard plan --comment` writes the plan as a Markdown comment and `--metrics` a small
+  metrics file. The PR workflow uploads both as the `pipeline-plan` artifact, and a separate
+  job with only `pull-requests: write` and no PR code posts or updates one sticky comment.
+- The metrics file records packages total and selected, suites total and selected, jobs and the
   tier. A team sends it to whatever observability it already has. picard builds no dashboard.
 
 **How it will be used**
@@ -884,7 +919,7 @@ title, and the tier-5 docs describe manifest mode. Wait for a repo that needs it
 ```
 
 ```sh
-picard affected --base origin/main --format names     # planned (item 4): which packages a release PR will touch
+picard affected --base origin/main --format names     # today (item 4): which packages a release PR will touch
 ```
 
 ### 19. Self-healing CI, flaky analytics, conformance rules and code owners
@@ -903,7 +938,7 @@ picard only chooses what runs.
 **How it will be used**
 
 ```toml
-# .picard/pipeline.toml           # planned: picard decides, Nx Cloud (if used) executes and reports
+# .picard/pipeline.toml           # today (items 1 and 8): picard decides, Nx Cloud (if used) executes and reports
 [impact]
 engine = "nx"
 
@@ -963,6 +998,8 @@ watchexec -e py,ts -- picard simulate --local                                   
 
 ## Suggested order
 
+Done: all five steps are built, together with items 10, 11 and 17.
+
 1. **An Nx engine** (item 1), then the engine interface change that passes base and head, and
    adapters for Turborepo, moon and bazel-diff.
 2. **Shallow clone and unknown base** (5), **force a full run** (6) and **`picard affected`**
@@ -973,18 +1010,39 @@ watchexec -e py,ts -- picard simulate --local                                   
 5. **Test-only changes** (7) and **undeclared dependency check** (9): precision, and protection
    against under-testing.
 
-Everything else waits for a repo that needs it.
+Everything else (items 12 to 16 and 18 to 21) waits for a repo that needs it.
 
 ## Not verified
 
-These came up but were not confirmed from official documentation in this pass: Vitest's
-`--changed` behaviour, pnpm's `--filter "...[origin/main]"` selector, Mergify and Aviator
-speculative batching, CircleCI timing-based splitting, how Rush and Lage detect changes, and
-the exact Pants shard flag name (its own page uses both `--test-shard` and `--shard`).
-`pytest-testmon` is described from third-party write-ups only. moon's documentation page does
-not say how its changed files can be supplied beyond `git status`, and bazel-diff does not
-document the format of `--modified-filepaths` or whether it removes the need to check out each
-revision.
+From documentation, these came up but were not confirmed in this pass: Vitest's `--changed`
+behaviour, pnpm's `--filter "...[origin/main]"` selector, Mergify and Aviator speculative
+batching, CircleCI timing-based splitting, and how Rush and Lage detect changes.
+`pytest-testmon` is described from third-party write-ups only. None of these is used by a built
+item. The Pants shard flag is settled: `pants help test` (Pants 2.33.1) gives `--test-shard=k/N`
+with k from 0, and the two shard jobs in item 8 were run.
+
+What the built items rely on but was never run for real, only tested with fakes or by checking
+the generated command:
+
+- **The plan comment job never ran on GitHub.** Its permissions, the artifact hand-off and the
+  `gh api` calls are checked by string tests and actionlint only. The
+  `actions/upload-artifact@v7` and `actions/download-artifact@v8` pair is unverified until a
+  real PR run.
+- **Nx, Turborepo, moon and bazel-diff were never run.** The engines were tested with fake
+  launchers. moon's stdin input (the `moon query changed-files` shape) and the JSON that
+  `turbo ls --affected --output=json` prints are not documented upstream, so any output of an
+  unexpected shape counts as a failure and widens to the fallback. moon's page does not say
+  that changed files can be supplied at all, and picard never uses bazel-diff's
+  `--modified-filepaths` (it hashes both revisions instead).
+- **pytest-split, pytest-rerunfailures, pytest-impacted, deptry, knip and Jest were never run.**
+  Only the commands picard generates (`--splits/--group`, `--reruns`, `--impacted ...`,
+  `--shard`, `--changedSince`, `deptry <path>`, `knip ... --workspace`) were tested. Nor were
+  the `turbo` and `nx` executors' commands, or the Pants executor's retries
+  (`--test-attempts-default` is listed by `pants help test` in Pants 2.33.1, but never ran).
+- **No real Cargo.lock or package-lock.json produced by cargo or npm was diffed.** Those parsers
+  were tested with small synthetic lockfiles. `uv.lock` was checked against real `uv lock`
+  output in two cases: the httpx bump in item 2, which narrowed, and a root dev-dependency move
+  in a copy of the demo, which ran everything as designed.
 
 ## Sources
 

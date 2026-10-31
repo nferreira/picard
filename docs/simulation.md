@@ -15,11 +15,12 @@ needs nothing installed (`picard`).
 | `--local --against upstream` | commits not pushed yet, plus uncommitted work | a pre-push check |
 | `--local --against <ref>` | commits since any ref, plus uncommitted work | comparing with a release branch |
 | `--local --no-working` | committed changes only | what a PR would contain |
-| `--base REF` | `git diff REF...HEAD` | CI: the PR base commit |
+| `--base REF` | `git diff REF...HEAD` (a missing base is fetched once, then [`[git] unknown_base`](configuration.md#git) decides) | CI: the PR base commit |
 
 The first match wins. Without `--title`, a change with no commit yet is planned from its paths
 alone: a source file demands `full`, a markdown file demands `docs`, and a title you add can
-only raise that.
+only raise that. `--label NAME` (repeatable; `PICARD_LABELS` when absent) adds PR labels, so
+`--label ci:full` previews a forced full run.
 
 ### Which branch is "the origin branch"
 
@@ -174,9 +175,12 @@ TIERS
 - **Why:** the chain from each affected package down to the package that owns a changed file.
 - **`[uv]`, `[npm]`:** the graph provider that read the package from its manifest.
 - **`via pants`, `via native`:** the impact engine that decided the package is changed or
-  affected. Other values are `command` (an external engine), `rule` (a `[[rules]]` entry) and
-  `global file` (a lockfile or config change affects everything). Here Pants owns the Python
-  files and the native engine answers for the JavaScript one, which is the `!` note at the end.
+  affected. Other values are `command` (an external engine), `nx`, `turbo`, `moon` and
+  `bazel-diff` (tool engines), `rule` (a `[[rules]]` entry), `global file` (a lockfile or config
+  change affects everything), `lockfile` (a narrowed lockfile reached it), `always`
+  (`always = true`) and `forced` (a full-run label or an unknown base). Here Pants owns the
+  Python files and the native engine answers for the JavaScript one, which is the `!` note at
+  the end.
 - **Tiers:** tiers 0 to 2 follow the graph, tiers 3 and 4 ignore the diff and run everything.
 - Warnings, for example a `docs:` title on a source change, are listed under the table.
 
@@ -209,8 +213,9 @@ picard doctor                    # ready, or a warning and exit 1
 picard doctor --how-to-install   # install steps for whatever is missing
 ```
 
-With `engine = "pants"` and no Pants on the PATH, every command warns once on stderr and answers
-with the native engine, so a plan is still correct. The plan carries the same note.
+With `engine = "pants"` (or `nx`, `turbo`, `moon`, `bazel-diff`) and the tool not on the PATH,
+every command warns once on stderr and answers with the fallback engine, so a plan is still
+correct. The plan carries the same note.
 
 ## Preparing the repo for an engine
 

@@ -64,9 +64,12 @@ fail closed:
 - **A label can raise the bar, never lower it.** The `[labels] full` label (`ci:full` by
   default) runs every package at the strictest profile. No label makes a PR run less, and a
   package marked `always = true` is in every PR's affected set.
-- **An engine can narrow the answer, never lose a package.** If Pants or a command engine
-  fails, is not installed (picard warns, and `picard doctor --how-to-install` says how to fix it)
-  or does not own a file, the fallback engine answers, and the plan says so.
+- **An engine can narrow the answer, never lose a package.** If Pants, Nx, Turborepo, moon,
+  bazel-diff or a command engine fails, times out, prints something unexpected, is not installed
+  (picard warns, and `picard doctor --how-to-install` says how to fix it) or does not own a file,
+  the fallback engine answers, and the plan says so. The `nx`, `turbo`, `moon` and `bazel-diff`
+  engines also add, from picard's own graph, the owners of the files they were given and all
+  their dependents, so they can add packages but never drop one the native graph would run.
 - **Unsafe input runs everything.** A rule capture that is not a plain name, or is missing from
   the inventory, runs everything and warns. It is never turned into a command.
 - **An unknown base runs everything.** When the `--base` commit is not in the clone and one
@@ -100,11 +103,14 @@ picard is the decision layer, not a build system. It does not cache, build or di
 | Reused | Owned by picard |
 |---|---|
 | The package graph (uv, pnpm, npm, yarn, cargo, go, or Pants, Nx, Turborepo, moon or bazel-diff as an engine) | Mapping a title and paths to a profile |
-| Test selection (pytest markers, `go test`, `cargo test`, `node --test`) | The six tiers and the plan |
-| Install and run (uv, pnpm, cargo, go) | The gate that makes skips safe |
-| Linters and scanners (ruff, actionlint, gitleaks, semgrep) | Rules for files with no code |
+| Test selection (pytest markers, `go test`, `cargo test`, `node --test`, and opt-in pytest-impacted or Jest `--changedSince`) | The six tiers and the plan |
+| Install and run (uv, pnpm, cargo, go), sharding (pytest-split, Jest `--shard`) and retries (pytest-rerunfailures) | The gate that makes skips safe |
+| Caching and task ordering, through the `pants`, `turbo` and `nx` executors | Which packages a tier runs, whatever the executor |
+| Linters, scanners and dependency checkers (ruff, actionlint, gitleaks, semgrep, deptry, knip) | Rules for files with no code |
 | Releases (Release Please) | Running the same plan locally and in CI |
 
 It sits beside tools such as Nx, Turborepo, Bazel or Pants, and can use them as the source of
-the graph. It never requires one. See [ADR 0003](adr/0003-graph-from-ecosystem-manifests.md) and
-[ADR 0005](adr/0005-plugin-architecture.md).
+the graph. It never requires one. See [ADR 0003](adr/0003-graph-from-ecosystem-manifests.md),
+[ADR 0005](adr/0005-plugin-architecture.md) and
+[ADR 0007](adr/0007-engines-receive-the-change-revisions.md). How picard compares with these
+tools, item by item, is in [missing features](missing-features.md).

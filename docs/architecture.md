@@ -65,7 +65,7 @@ The host holds no picard code. CI installs a pinned picard in `pipeline-setup-pi
 | Component | Responsibility |
 |---|---|
 | `.picard/pipeline.toml` | The policy: runtime, types, profiles, paths, packages, tiers. Per repo. |
-| `src/picard` | Pure function from (config, tier, titles, body, changed files) to a plan. |
+| `src/picard` | A function from (config, tier, titles, body, labels, changed files, revisions) to a plan. |
 | Graph providers | Read one ecosystem's manifests and return packages, paths and edges: `uv`, `npm`, `cargo`, `go`, `command`. |
 | Impact engines | Map changed files to the packages they affect: `native`, `pants`, `command`, `nx`, `turbo`, `moon`, `bazel-diff`. |
 | Executors | Build a suite's command for a package that does not spell it out: `pytest`, `uv-pytest`, `go-test`, `cargo-test`, `pnpm`, `npm`, `make`, and `pants`, `turbo`, `nx`, which hand the suite to the tool and its cache. |
@@ -103,6 +103,7 @@ The host holds no picard code. CI installs a pinned picard in `pipeline-setup-pi
   "revisions": { "base": "<sha>", "head": "HEAD" },      // null without a git range
   "metrics": { "packages_total": 7, "packages_selected": 3,
                "suites_total": 12, "suites_selected": 6, "jobs": 9, "selected_pct": 50 }
+  // also: changed_files_total, rules, review, unmapped and impact (changed, affected, why)
 }
 ```
 
@@ -133,26 +134,31 @@ changed files ──────────────────────
   the discovered graph: the deepest package that owns a file, then its dependents. `pants` asks
   Pants (`list`, `dependents --transitive`) and sends the files it does not own to a fallback
   engine. `command` asks any external tool over stdin and stdout. `nx`, `turbo`, `moon` and
-  `bazel-diff` ask those tools, on one shared base (`graph/engines/tool.py`): files the tool does
-  not own and uncommitted files go to the fallback, picard's graph always adds the dependents,
-  and any failure hands the whole question to the fallback. `turbo` and `bazel-diff` read the
+  `bazel-diff` ask those tools, on one shared base (`graph/engines/tool.py`): files the tool
+  does not own and uncommitted files go to the fallback, picard's graph always adds the owners
+  of the files and their dependents, and any failure hands the whole question to the fallback. `turbo` and `bazel-diff` read the
   commits from `self.revisions` and need a git range.
 - **The shared policy** lives in the base class (`ImpactEngine.impact`): a global file such as
-  a lockfile affects every package, whatever the engine says. A subclass only implements the
-  engine-specific part. An engine never decides what to run, only what is affected.
+  a lockfile affects every package, whatever the engine says. A lockfile listed under
+  `[lockfiles] narrow` goes to `lockfile_impact` instead, which diffs it between the revisions
+  (`lockfiles.py`) and runs everything whenever the change cannot be attributed. A subclass only
+  implements the engine-specific part. An engine never decides what to run, only what is
+  affected.
 - **Fail safe.** An engine that fails, times out or does not own a file hands the question to
   the fallback (`native` by default) and adds a note to the plan. The answer can get wider,
   never narrower.
-- **Labels.** Every affected package records which engine decided it (`native`, `pants`,
-  `command`, `rule` or `global file`). `picard graph` and `simulate` show it as `via X`.
+- **Labels.** Every affected package records what decided it: an engine (`native`, `pants`,
+  `command`, `nx`, `turbo`, `moon`, `bazel-diff`), `rule`, `global file`, `lockfile`, `always`
+  or `forced` (a full-run label or an unknown base). `picard graph` and `simulate` show it as
+  `via X`, and `picard affected --format json` as `decided_by`.
 - **Debug.** `--debug`, `PICARD_DEBUG=1` or `debug = true` under `[impact]` prints on stderr
   what each engine returned and where Pants and the native engine differ. The plan JSON on
   stdout stays clean.
 - **Setup.** `picard setup` asks the engine to prepare the repo, and `picard setup --check`
   verifies it for CI. `native` needs nothing. The `pants` engine writes `pants.toml` and the
   build files, never overwrites an existing `pants.toml`, and is idempotent.
-- **Memoised.** An impact is computed once per distinct file list in a run, so an external
-  engine is not called once per tier.
+- **Memoised.** An impact is computed once per distinct file list and git range in a run, so
+  an external engine is not called once per tier.
 
 Providers, engines and executors are looked up by name in registries
 (`registry.py`). A repo can add its own from `[plugins]` without changing picard. See
@@ -215,11 +221,15 @@ Providers, engines and executors are looked up by name in registries
 ## Limits
 
 - Package-level granularity: a change inside a package runs that package's whole suite for the
-  tier. Test-level impact analysis is on the [roadmap](improvements.md).
+  tier, unless the tier opts in to test selection (`selection = true`), which passes the test
+  runner's own flag. Coverage-based test impact analysis is on the [roadmap](improvements.md).
 - `{markers}` is a pytest-style expression. Other runners map it in the command or ignore it.
 - The graph is as precise as the dependencies a package declares. Edges that live in no
   manifest are added with `depends_on` or a `[[path_rules]]` entry.
-- Only Python gets import-level precision, and only through the `pants` engine. Other
-  languages are decided by the native engine from their manifests.
+- Only Python gets import-level precision, and only through the `pants` engine. The `nx`,
+  `turbo`, `moon` and `bazel-diff` engines add what their graphs see on top of picard's own
+  (the owners of the files and their dependents), so they can widen the native answer but not
+  narrow it. Under the native engine, `test_paths` keeps a test-only change from reaching the
+  dependents.
 - A host runs the picard version it pinned, and its scaffolded workflows only change when
   it runs `picard update`.

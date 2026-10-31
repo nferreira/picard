@@ -1,15 +1,17 @@
 # Roadmap: what else can improve the pipeline
 
-What is already built is in [tiers](tiers.md) and [architecture](architecture.md). These are
-candidates, grouped by what they buy, with the tier each would land in. None is implemented.
+What is already built is in [tiers](tiers.md) and [architecture](architecture.md), and the
+comparison with other tools in [missing features](missing-features.md). These are candidates,
+grouped by what they buy, with the tier each would land in. A row marked **built** says what
+is done and what, if anything, is left.
 
 ## Speed and cost
 
 | Idea | Tier | Notes |
 |---|---|---|
-| **Test sharding** by recorded duration (`pytest-split`, Jest `--shard`) | 1, 3, 4 | The matrix already exists. Add a `shards` key per package and expand it in the plan. |
+| **Test sharding** by recorded duration (`pytest-split`, Jest `--shard`) | 1, 3, 4 | **Built** without durations: `shards` per package expands the plan, split by the splitter's default. Left: balance from the nightly run's timing file. |
 | **Standard caching** (uv, pnpm, buildx) in `pipeline-run-suite` | all | One place to add it, every repo benefits. Key on lockfile hashes. |
-| **Test impact analysis**: coverage maps from tier 4 pick tests, not just packages, for tier 1 | 1 | Biggest win for large suites. Needs a nightly job that publishes the map. |
+| **Test impact analysis**: coverage maps from tier 4 pick tests, not just packages, for tier 1 | 1 | Biggest win for large suites. Needs a nightly job that publishes the map. Opt-in selection from the diff (pytest-impacted, Jest `--changedSince`) is **built**; the coverage map is not. |
 | **Self-hosted runner pool** per `[runtime] runs_on` | all | Already supported by config. Keep fork PRs on hosted runners. |
 | **Fail fast order**: lint before tests inside tier 1 | 1 | Cheap to add as a `needs` edge. |
 
@@ -17,7 +19,7 @@ candidates, grouped by what they buy, with the tier each would land in. None is 
 
 | Idea | Tier | Notes |
 |---|---|---|
-| **Flaky-test quarantine**: `@pytest.mark.flaky` runs in tier 4 only, retried with `pytest-rerunfailures`, tracked by the nightly issue | 1 to 4 | A flaky test blocking merges costs more than a missed bug it might catch. |
+| **Flaky-test quarantine**: `@pytest.mark.flaky` runs in tier 4 only, retried with `pytest-rerunfailures`, tracked by the nightly issue | 1 to 4 | A flaky test blocking merges costs more than a missed bug it might catch. Retries are **built** (`retries` on the pytest executors). Left: tracking in the nightly issue. |
 | **Coverage ratchet / patch coverage** on the diff | 2 | Fail on lowered coverage for changed lines, not on the total. |
 | **Mutation testing** on the packages touched in the last week | 4 | Finds tests that pass without asserting anything. |
 | **Contract tests** as the baseline marker for any service with consumers | 2 | The natural content of the must-pass list. |
@@ -47,7 +49,7 @@ candidates, grouped by what they buy, with the tier each would land in. None is 
 
 | Idea | Tier | Notes |
 |---|---|---|
-| **Plan comment on the PR** (sticky): profile, packages, why, warnings | 1 | The job summary has it today. A sticky comment puts it where reviewers look. |
+| **Plan comment on the PR** (sticky): profile, packages, why, warnings | 1 | **Built**: the `plan-comment` job in `pipeline-pr.yml`, from `picard plan --comment`. |
 | **Label by type and size** (`feat`, `breaking`, `size/L`) | 1 | Derived from the plan, so labels cannot disagree with the pipeline. |
 | **`picard explain`**: why did this file demand `full`? | 0 | The reasons are already collected. |
 | **Scaffold command** (`picard init`) that detects packages and writes the first `pipeline.toml` | 0 | Lowers adoption friction for monorepos. |

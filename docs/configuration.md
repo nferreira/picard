@@ -78,7 +78,7 @@ footer). The list is enforced by a test against `pipeline-extra`.
 |---|---|
 | `docs` | Globs that demand only the lowest profile. |
 | `default` | Profile demanded by a file that matches nothing else. |
-| `global` | Globs that make every package affected (lockfiles, the config, workflows). |
+| `global` | Globs that make every package affected (lockfiles, the config, workflows). A lockfile also listed under `[lockfiles] narrow` is narrowed instead. |
 | `[[paths.floor]]` | `globs` + `profile`: the minimum profile for matching files. |
 
 Glob syntax: `*` within a segment, `**` across segments, `?` one character.
@@ -106,7 +106,7 @@ them. Those members are changed packages (`via lockfile`), and their dependents 
 The plan says what it found:
 
 ```text
-warning: uv.lock changed httpx 0.27.0 -> 0.28.1: reaches 2 of 3 packages (core, api)
+warning: uv.lock changed httpx 0.27.0 -> 0.28.1, sniffio 1.3.1 -> none: reaches 2 of 3 packages (api, core)
 ```
 
 Members map to packages by name for `uv.lock` and `Cargo.lock`, and by path for
@@ -258,10 +258,10 @@ does not own a file, the fallback answers and the plan carries a note. A global 
 (`[paths] global`) affects every package whatever the engine says.
 
 `picard doctor` checks that what the engine needs is installed and `picard doctor --how-to-install`
-prints the install steps. If Pants is configured and missing, picard warns on stderr once, answers
-with the fallback engine and adds a note to the plan. `picard setup` prepares the repo for the
-engine and `picard setup --check` fails (exit 2) when
-that setup is missing or stale, which is what CI runs. `native` needs no setup. The `pants`
+prints the install steps. If the engine's tool (Pants, Nx, Turborepo, moon, bazel-diff) is
+configured and missing, picard warns on stderr once, answers with the fallback engine and adds a
+note to the plan. `picard setup` prepares the repo for the engine and `picard setup --check`
+fails (exit 2) when that setup is missing or stale, which is what CI runs. `native` needs no setup. The `pants`
 engine writes `pants.toml` and the build files it needs, leaves an existing `pants.toml` alone
 and is idempotent. Run any command with `--debug` to see what Pants and the native engine each
 returned for the same files and where they differ.
@@ -369,9 +369,10 @@ review an edit to them the same way.
 
 ## `[[packages]]`
 
-Declares a package by hand, or **merges over a discovered one by name**: `baseline`, extra
-`depends_on` edges (for dependencies the manifests cannot express) and `commands` are
-added to what was discovered.
+Declares a package by hand, or **merges over a discovered one by name**: extra `depends_on`
+edges (for dependencies the manifests cannot express) and `commands` are added to what was
+discovered, and `path`, `baseline`, `executor`, `always`, `shards` and `test_paths` replace it
+when given. A merged package keeps its provider.
 
 ```toml
 [[packages]]

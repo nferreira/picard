@@ -39,9 +39,11 @@ rules.
 ## Never run less than the truth
 
 Skipping work is only safe if the answer errs on the side of running more. A lockfile or config
-change runs everything, a file no rule covers runs everything, a title can raise the bar and
-never lower it, an engine that fails or does not own a file hands the question to the native
-engine, and the gate fails a job that had to run and did not. The full list is in
+change runs everything (a lockfile listed under `[lockfiles] narrow` runs what it reaches, and
+everything when picard cannot tell), a file no rule covers runs everything, a title or a PR
+label (`ci:full`) can raise the bar and never lower it, an engine that fails or does not own a
+file hands the question to its fallback engine, a base that is not in the clone runs everything,
+and the gate fails a job that had to run and did not. The full list is in
 [docs/concepts.md](docs/concepts.md#never-run-less-than-the-truth).
 
 ## Tiers
@@ -120,8 +122,9 @@ This repository:
 ```
 src/picard/                         the planner (Python 3.11+, standard library only)
   graph/providers/                    read the package graph: uv, npm, cargo, go, command
-  graph/engines/                      answer "what is affected": native, pants, command
-  executors/                          build suite commands: pytest, go-test, cargo-test, pnpm, ...
+  graph/engines/                      answer "what is affected": native, pants, command, nx, turbo, moon, bazel-diff
+  executors/                          build suite commands: pytest, go-test, cargo-test, pnpm, ..., pants, turbo, nx
+  lockfiles.py                        diff uv.lock, Cargo.lock and package-lock.json for [lockfiles] narrow
   scaffold.py                         picard init / update / install-hooks
   templates/                          what `picard init` writes into a repo
 tests/, docs/                       tests and documentation
@@ -150,7 +153,9 @@ picard simulate --files a.py b.py        # ... for a change I have not made
 picard simulate --local --tiers 0,1,2 --run   # run those tiers for real
 picard changed                           # what differs locally, and against which branch
 picard graph --files packages/x/y.py     # the dependency graph with the impact marked
+picard affected --base origin/main --format matrix   # just the affected packages: names, paths, json or matrix
 picard plan --tier 1 --base origin/main --title "feat(api): add x (ABC-1)" --format text
+picard plan --tier 1 --base origin/main --label ci:full --comment plan.md --metrics metrics.json
 picard run --tier 0 --local              # what the pre-push hook does
 picard check-title "fix: handle nil (ABC-2)"
 picard validate-config
@@ -180,11 +185,18 @@ of everything that depends on it, transitively. No hand-kept graph to drift.
 An **impact engine** then maps changed files to packages and walks the dependents. The default,
 `native`, walks the discovered graph and needs nothing installed. `pants` uses Pants for
 import-level precision in the languages it understands and hands every other file to `native`.
-`command` asks any external tool. Pick one in `[impact]`, and run `picard setup` to let the
-engine prepare the repo. Nothing locks you into a build system.
+`nx`, `turbo`, `moon` and `bazel-diff` ask those tools the same way, and `command` asks any
+external tool. Pick one in `[impact]`, and run `picard setup` to let the engine prepare the
+repo. Executors can also hand a package's suites to Pants, Turborepo or Nx, so their cache and
+task ordering apply. Nothing locks you into a build system.
 See [ADR 0003](docs/adr/0003-graph-from-ecosystem-manifests.md),
-[ADR 0005](docs/adr/0005-plugin-architecture.md) and
-[configuration](docs/configuration.md#discover).
+[ADR 0005](docs/adr/0005-plugin-architecture.md),
+[ADR 0007](docs/adr/0007-engines-receive-the-change-revisions.md) and
+[configuration](docs/configuration.md#discover). Per package, `test_paths` keeps a test-only
+change from running the dependents, `always = true` keeps a package in every PR, and
+`shards = N` splits its tests over N jobs. Executor options add `retries`, a `deps` suite
+(deptry, knip) and, in a tier with `selection = true`, test selection inside a suite
+(pytest-impacted, Jest `--changedSince`). `[git] unknown_base` says what a missing base does.
 
 ## Pants is optional
 
@@ -210,8 +222,10 @@ uv run pytest            # tests only
 ## Before relying on it
 
 - Image pins in `.github/actions/pipeline-extra/action.yml` (gitleaks, semgrep, actionlint) and
-  the `@v5`/`@v4` action tags were written without network access. Check each exists and pin
-  third-party actions to commit SHAs. If your org already runs semgrep or
+  the action tags (`checkout@v7`, `setup-python@v5`, `setup-node@v4`, ...) were written without
+  network access. Check each exists and pin third-party actions to commit SHAs. The PR
+  workflow's `upload-artifact@v7` and `download-artifact@v8` pair, which feeds the plan
+  comment, has not run on GitHub yet. If your org already runs semgrep or
   gitleaks elsewhere, drop that extra from the profiles.
 - This repository's own `.github/workflows/ci.yml` also uses action tags (`checkout`, `setup-uv`)
   that were not checked against the registry. Pin them to commit SHAs too.

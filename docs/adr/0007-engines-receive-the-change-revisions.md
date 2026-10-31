@@ -37,8 +37,10 @@ would break every engine written outside picard.
 - Test selection inside a suite (`[tiers.N] selection`) gets a base only with a committed range,
   that is `revisions` is set and `uncommitted` is empty. Otherwise whole suites run and the plan
   warns.
-- Until a lockfile change can be attributed to packages, `lockfile_impact` affects every
-  package. An answer can widen, never narrow.
+- `lockfile_impact` affects every package whenever a lockfile change cannot be attributed: no
+  revisions, a new or deleted lockfile, one that does not parse or cannot be read, a reached
+  member that is not a picard package, a change that reaches no member, or only hashes changed.
+  An answer can widen, never narrow.
 
 ## Consequences
 
