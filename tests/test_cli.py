@@ -176,9 +176,7 @@ def test_unknown_tier_and_missing_config_exit_2(repo, capsys):
     ],
 )
 def test_check_title_exit_codes(repo, args, code):
-    assert (
-        main(["check-title", "--config", str(repo / ".picard" / "pipeline.toml"), *args]) == code
-    )
+    assert main(["check-title", "--config", str(repo / ".picard" / "pipeline.toml"), *args]) == code
 
 
 def test_check_title_reads_commit_msg_file(repo, tmp_path):
