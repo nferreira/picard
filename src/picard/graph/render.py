@@ -64,6 +64,9 @@ def render_why(impact: Impact) -> list[str]:
     """One line per affected package explaining how the change reaches it."""
     if impact.everything and not impact.global_files:
         return ["everything is affected"]
+    if impact.everything and set(impact.decided_by.values()) == {"lockfile"}:
+        files = ", ".join(impact.global_files)
+        return [f"everything is affected: {files} cannot be attributed to packages"]
     if impact.everything:
         return [f"everything is affected: {', '.join(impact.global_files)} is a global file"]
 
@@ -75,8 +78,15 @@ def render_why(impact: Impact) -> list[str]:
             return f"{name} is always affected (always = true)"
         return f"{name} is affected through {impact.chain(name)}{by(name)}"
 
+    def owner(name: str) -> str:
+        # Test-only, unless another change reaches the package's dependents through it anyway.
+        walked = any(name in chain[1:] for chain in impact.affected.values())
+        if name in impact.test_only and not walked:
+            return f"{name} owns a changed file (test files only: dependents are not affected){by(name)}"
+        return f"{name} owns a changed file{by(name)}"
+
     return [reached(name) for name in impact.affected if name not in impact.changed] + [
-        f"{name} owns a changed file{by(name)}" for name in impact.changed
+        owner(name) for name in impact.changed
     ]
 
 

@@ -4,6 +4,7 @@
   picard run       --tier 0 --local             plan, then execute the commands
   picard simulate  --files a b c --title "..."  what would every tier do for this change?
   picard graph     --files a b c                the dependency graph with the impact marked
+  picard affected  --base <sha> --format names  the affected packages, for other steps to use
   picard changed                                what differs locally, and against what
   picard check-title "feat(x): y (ABC-1)"       validate a PR title / commit subject
   picard validate-config                        lint pipeline.toml and print the packages
@@ -14,7 +15,9 @@ Where the changed files come from (first match wins):
   --files-from F  the same, read from a file or stdin (NUL or newline separated)
   --staged        what is in the index
   --working       every uncommitted change, staged or not, plus untracked files
-  --base REF      git diff REF...HEAD (CI: the PR base commit)
+  --base REF      git diff REF...HEAD (CI: the PR base commit). A base missing from the clone
+                  is fetched once; if that fails, [git] unknown_base decides: run every
+                  package with a warning (full, the default) or stop with exit 2 (fail)
   --local         everything that differs locally: commits since the branch this one grew
                   out of (see --against), plus staged, unstaged and untracked files
 
@@ -34,7 +37,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from picard import __version__, gitutil, graph
+from picard import __version__, gitutil, graph, report
 from picard import commits as cc
 from picard import config as cfgmod
 from picard.graph.impact import SetupError
@@ -42,6 +45,8 @@ from picard.planner import build_plan, impact_of, render_markdown, render_text
 from picard.scaffold import ScaffoldError
 
 DEFAULT_CONFIG = ".picard/pipeline.toml"
+AFFECTED_FORMATS = ("names", "paths", "json", "matrix")
+AFFECTED_SCHEMA = 1
 
 
 def _add_common(p: argparse.ArgumentParser) -> None:
@@ -108,6 +113,12 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("--format", choices=("json", "text"), default="json")
     plan.add_argument("--github-output", help="append plan outputs to this GITHUB_OUTPUT file")
     plan.add_argument("--summary", help="append a markdown summary to this file")
+    plan.add_argument(
+        "--comment", metavar="FILE", help="append the plan as a PR comment (markdown) to FILE"
+    )
+    plan.add_argument(
+        "--metrics", metavar="FILE", help="write what selection saved as one JSON object to FILE"
+    )
 
     run = sub.add_parser("run", help="plan, then run the commands")
     _add_change_args(run)
@@ -126,6 +137,15 @@ def _parser() -> argparse.ArgumentParser:
     _add_change_args(gr)
     _add_color(gr)
     gr.add_argument("--format", choices=("text", "mermaid", "json"), default="text")
+
+    aff = sub.add_parser("affected", help="list the packages a change affects")
+    _add_change_args(aff)
+    aff.add_argument(
+        "--format",
+        choices=AFFECTED_FORMATS,
+        default="names",
+        help='names or paths: one per line; json: versioned; matrix: {"include": [...]}',
+    )
 
     chg = sub.add_parser("changed", help="show what differs locally, and against what")
     _add_common(chg)
@@ -240,7 +260,7 @@ class Change:
     full_reasons: list[str] = field(default_factory=list)  # why everything must run anyway
 
 
-def _change(args: argparse.Namespace, need_diff: bool) -> Change:
+def _change(args: argparse.Namespace, cfg: cfgmod.Config, need_diff: bool) -> Change:
     """The change described by the arguments.
 
     A change given as files, the index or the working tree has no commit yet. Without a
@@ -268,8 +288,23 @@ def _change(args: argparse.Namespace, need_diff: bool) -> Change:
         return Change(diff.files, titles, body, not titles, diff.describe(label), revisions, labels)
     if args.base:
         source = f"{args.base}...{args.head}"
-        files = gitutil.changed_files(args.base, args.head)
-        revisions = graph.Revisions(gitutil.merge_base(args.base, args.head), args.head)
+        try:
+            base = gitutil.resolve_base(args.base, args.head)
+        except gitutil.UnknownBaseError as exc:
+            # Without the base there is no diff, so nothing can be narrowed: run everything
+            # (fail closed), or stop when the repo prefers a red job. A bad --head is a plain
+            # GitError and always stops.
+            if cfg.git_unknown_base == "fail":
+                raise
+            print(f"picard: warning: {exc}", file=sys.stderr)
+            print(
+                "picard: warning: running every package instead "
+                '(set [git] unknown_base = "fail" to stop here)',
+                file=sys.stderr,
+            )
+            return Change([], titles, body, False, source, None, labels, [str(exc)])
+        files = gitutil.changed_files(base, args.head)
+        revisions = graph.Revisions(base, args.head)
         return Change(files, titles, body, False, source, revisions, labels)
     raise cfgmod.ConfigError(
         "pass what changed: --files a b c, --staged, --working, --base REF or --local"
@@ -305,7 +340,7 @@ def _resolve(args: argparse.Namespace, cfg: cfgmod.Config, *, expand_shards: boo
     tier = cfg.tiers.get(args.tier)
     if tier is None:
         raise cfgmod.ConfigError(f"tier {args.tier} is not defined in {args.config}")
-    change = _change(args, need_diff=tier.compare != "none")
+    change = _change(args, cfg, need_diff=tier.compare != "none")
     return _plan(cfg, args.tier, change, expand_shards=expand_shards)
 
 
@@ -344,6 +379,12 @@ def _cmd_plan(args: argparse.Namespace) -> int:
     if args.summary:
         with open(args.summary, "a", encoding="utf-8") as fh:
             fh.write(render_markdown(plan))
+    if args.comment:
+        with open(args.comment, "a", encoding="utf-8") as fh:
+            fh.write(report.render_comment(plan))
+    if args.metrics:
+        with open(args.metrics, "w", encoding="utf-8") as fh:
+            fh.write(report.render_metrics(plan) + "\n")
     return 0
 
 
@@ -382,11 +423,11 @@ def _parse_tiers(value: str, cfg: cfgmod.Config) -> list[int]:
     return tiers
 
 
-def _simulation_change(args: argparse.Namespace) -> Change:
-    """Like _change, but a bare `simulate` means "the current branch"."""
+def _simulation_change(args: argparse.Namespace, cfg: cfgmod.Config) -> Change:
+    """Like _change, but a bare `simulate` (or `affected`) means "the current branch"."""
     if not _has_source(args):
         args.local = True
-    return _change(args, need_diff=True)
+    return _change(args, cfg, need_diff=True)
 
 
 PACKAGE_COLUMN = 54
@@ -473,7 +514,7 @@ def _render_simulation(cfg, change, plans, impact, *, color, commands) -> str:
 def _cmd_simulate(args: argparse.Namespace) -> int:
     cfg = cfgmod.load(args.config)
     tiers = _parse_tiers(args.tiers, cfg)
-    change = _simulation_change(args)
+    change = _simulation_change(args, cfg)
     plans = {n: _plan(cfg, n, change) for n in tiers}
     impact = _impact_of(cfg, change)
 
@@ -503,7 +544,7 @@ def _cmd_graph(args: argparse.Namespace) -> int:
     cfg = cfgmod.load(args.config)
     impact = None
     if _has_source(args):
-        impact = _impact_of(cfg, _change(args, need_diff=True))
+        impact = _impact_of(cfg, _change(args, cfg, need_diff=True))
     if args.format == "json":
         data = {
             "packages": {
@@ -523,6 +564,48 @@ def _cmd_graph(args: argparse.Namespace) -> int:
         print(graph.render_tree(cfg, impact, color=_use_color(args)))
         if impact:
             print("\n" + "\n".join(graph.render_why(impact)))
+    return 0
+
+
+# ── affected ───────────────────────────────────────────────────────────────────────────
+
+
+def _cmd_affected(args: argparse.Namespace) -> int:
+    """The affected set (rules, the engine, `always`, forced full) in a shape a step can use."""
+    cfg = cfgmod.load(args.config)
+    change = _simulation_change(args, cfg)
+    impact = _impact_of(cfg, change)
+    names = [n for n in cfg.packages if n in impact.affected]  # config order
+    if args.format == "names":
+        if names:
+            print("\n".join(names))
+    elif args.format == "paths":
+        paths = list(dict.fromkeys(cfg.packages[n].path for n in names))
+        if paths:
+            print("\n".join(paths))
+    elif args.format == "matrix":
+        include = [{"name": n, "path": cfg.packages[n].path} for n in names]
+        print(json.dumps({"include": include}, separators=(",", ":")))
+    else:
+        full = cfg.full_label
+        labelled = [f"label {full} forces a full run"] if full and full in change.labels else []
+        data = {
+            "schema": AFFECTED_SCHEMA,
+            "source": change.source,
+            "everything": impact.everything,
+            "packages": [
+                {
+                    "name": n,
+                    "path": cfg.packages[n].path,
+                    "provider": cfg.packages[n].provider,
+                    "decided_by": impact.decided_by.get(n),
+                    "chain": list(impact.affected[n]),
+                }
+                for n in names
+            ],
+            "notes": [*impact.notes, *change.full_reasons, *labelled],
+        }
+        print(json.dumps(data, indent=2))
     return 0
 
 
@@ -654,6 +737,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "run": _cmd_run,
         "simulate": _cmd_simulate,
         "graph": _cmd_graph,
+        "affected": _cmd_affected,
         "changed": _cmd_changed,
         "check-title": _cmd_check_title,
         "validate-config": _cmd_validate,

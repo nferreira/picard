@@ -71,6 +71,9 @@ register `unit`, `integration`, `baseline` and `slow` in `pyproject.toml` with
 - **Merge queue:** enable it for `main`.
 - **Squash merge only,** with the commit message set to **Pull request title**.
 - **Actions:** allow Actions from the organization, and pin third-party actions to SHAs.
+- **Self-hosted runners:** the PR workflow's artifact steps (`actions/upload-artifact@v7`,
+  `actions/download-artifact@v8`) run on Node 24, so a self-hosted runner pool needs Actions
+  Runner 2.327.1 or later.
 - **Security:** enable the dependency graph (needed by dependency review), secret scanning and
   Dependabot alerts.
 

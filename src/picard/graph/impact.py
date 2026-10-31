@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import os
+import posixpath
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from picard import gitutil, lockfiles
 from picard.globs import matches
 
 if TYPE_CHECKING:
-    from picard.config import Config
+    from picard.config import Config, Package
     from picard.registry import Registries
 
 
@@ -50,7 +53,8 @@ def owns(path: str, package_path: str) -> bool:
 def owner(cfg: Config, path: str) -> str | None:
     """The package that owns `path`: the deepest package directory containing it."""
     owners = [p for p in cfg.packages.values() if owns(path, p.path)]
-    return max(owners, key=lambda p: len(p.path)).name if owners else None
+    # The root "." is the shallowest owner, not a one-character path that ties with "b".
+    return max(owners, key=lambda p: 0 if p.path == "." else len(p.path)).name if owners else None
 
 
 def everything(cfg: Config, why: Iterable[str] = (), by: str = "rule") -> Impact:
@@ -145,14 +149,25 @@ class ImpactEngine(ABC):
     def lockfile_impact(self, cfg: Config, lockfiles: list[str]) -> Impact:
         """What the changed `[lockfiles] narrow` files affect.
 
-        Fails closed: until a change can be attributed to packages, every package is affected.
+        Each lockfile is diffed between the base and the head, and the workspace members its
+        changes reach become changed packages. Fails closed: a lockfile whose change cannot be
+        attributed to picard packages, for any reason, affects every package and says why.
         """
-        notes = tuple(
-            f"{path} changed and cannot be attributed to packages yet: running everything"
-            for path in lockfiles
-        )
+        result = Impact((), {}, False, ())
+        for path in lockfiles:
+            result = merge(cfg, result, self._one_lockfile(cfg, path))
+        return result
+
+    def _one_lockfile(self, cfg: Config, path: str) -> Impact:
+        try:
+            return _attribute(cfg, path, self.revisions)
+        except _Unattributed as exc:
+            reason = str(exc)
+        except (gitutil.GitError, lockfiles.LockfileError) as exc:
+            reason = str(exc)
+        note = f"{path} changed and cannot be attributed to packages ({reason}): running everything"
         decided = dict.fromkeys(cfg.packages, "lockfile")
-        return Impact((), {n: (n,) for n in cfg.packages}, True, tuple(lockfiles), notes, decided)
+        return Impact((), {n: (n,) for n in cfg.packages}, True, (path,), (note,), decided)
 
     def problem(self, cfg: Config) -> str | None:
         """What stops this engine from working here (a missing tool), or None when it is ready."""
@@ -180,8 +195,120 @@ class NativeImpactEngine(ImpactEngine):
 
     def compute(self, cfg: Config, files: list[str]) -> Impact:
         changed = [p.name for p in cfg.packages.values() if any(owns(f, p.path) for f in files)]
-        affected = cfg.dependency_graph().with_dependents(changed)
+        test_only = [n for n in changed if _only_tests(cfg.packages[n], files)]
+        walked = cfg.dependency_graph().with_dependents(n for n in changed if n not in test_only)
+        # A test-only change affects its package and not, through it, the package's dependents.
+        # It is still reached when another changed package leads to it.
+        affected = {n: walked.get(n, (n,)) for n in cfg.packages if n in walked or n in test_only}
         decided = dict.fromkeys(affected, self.name)
         return Impact(
-            tuple(n for n in cfg.packages if n in changed), affected, False, (), (), decided
+            tuple(n for n in cfg.packages if n in changed),
+            affected,
+            False,
+            (),
+            (),
+            decided,
+            tuple(test_only),
         )
+
+
+def _only_tests(package: Package, files: list[str]) -> bool:
+    """Every changed file `package` owns matches its `test_paths`, relative to its path.
+
+    Narrows, so it fails closed: no `test_paths`, or a glob that cannot be compiled, means the
+    change is not test-only and the dependents are walked as usual.
+    """
+    if not package.test_paths:
+        return False
+    own = [f for f in files if owns(f, package.path)]
+    prefix = "" if package.path == "." else package.path + "/"
+    try:
+        return bool(own) and all(
+            f.startswith(prefix) and matches(f[len(prefix) :], package.test_paths) for f in own
+        )
+    except ValueError:
+        return False
+
+
+class _Unattributed(Exception):
+    """A lockfile change picard cannot attribute to packages; the message says why."""
+
+
+def _read_lockfile(cfg: Config, path: str, revisions: Revisions) -> tuple[str, str]:
+    """The old (base) and new (head, or working tree under --local) text of a lockfile."""
+    old = gitutil.show_file(revisions.base, path, cwd=cfg.root)
+    if path in revisions.uncommitted:
+        try:
+            new: str | None = ((cfg.root or Path.cwd()) / path).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            new = None
+        except (OSError, UnicodeDecodeError) as exc:
+            raise _Unattributed(f"the working-tree file cannot be read: {exc}") from exc
+    else:
+        new = gitutil.show_file(revisions.head, path, cwd=cfg.root)
+    if old is None:
+        raise _Unattributed(f"it is not in the base {revisions.base[:12]}")
+    if new is None:
+        raise _Unattributed("it was deleted")
+    return old, new
+
+
+def _member_package(cfg: Config, kind: str, path: str, key: str) -> str | None:
+    """The picard package a lockfile member key names: uv and cargo by name, npm by path.
+
+    A uv or cargo name counts only for a package that provider discovered: a package of the
+    same name from another provider, or listed by hand, is a different thing and maps to nothing.
+    """
+    if kind == "npm":
+        where = posixpath.normpath(posixpath.join(posixpath.dirname(path) or ".", key or "."))
+        return next((p.name for p in cfg.packages.values() if p.path == where), None)
+    if key == lockfiles.UV_ROOT:
+        return None
+    package = cfg.packages.get(key)
+    return key if package is not None and package.provider == kind else None
+
+
+def _versions(change: lockfiles.LockChange) -> str:
+    listed = [
+        f"{name} {old or 'none'} -> {new or 'none'}" for name, (old, new) in change.changed.items()
+    ]
+    if len(listed) > 3:
+        listed = [*listed[:3], f"and {len(listed) - 3} more"]
+    return ", ".join(listed) or "the entries of " + ", ".join(change.members)
+
+
+def _attribute(cfg: Config, path: str, revisions: Revisions | None) -> Impact:
+    """The packages one lockfile change reaches. Raises when it cannot be attributed."""
+    basename = posixpath.basename(path)
+    if basename not in lockfiles.SUPPORTED:
+        raise _Unattributed(f"picard cannot parse '{basename}'")
+    if revisions is None:
+        raise _Unattributed("lockfile narrowing needs --base or --local")
+    change = lockfiles.diff(path, *_read_lockfile(cfg, path, revisions))
+    if change.text_only:
+        raise _Unattributed("no resolved version, source or dependency changed")
+    if change.orphans:
+        raise _Unattributed(f"{', '.join(change.orphans)} reaches no workspace member")
+    hits = []
+    for key in change.members:
+        name = _member_package(cfg, change.kind, path, key)
+        if name is None:
+            member = "the workspace root" if key in ("", lockfiles.UV_ROOT) else f"'{key}'"
+            raise _Unattributed(f"{member} is not a picard package")
+        hits.append(name)
+    if not hits:
+        raise _Unattributed("the change reaches no package")
+    walked = cfg.dependency_graph().with_dependents(hits)
+    affected = {n: walked[n] for n in cfg.packages if n in walked}
+    note = (
+        f"{path} changed {_versions(change)}: reaches {len(affected)} of {len(cfg.packages)} "
+        f"packages ({', '.join(affected)})"
+    )
+    return Impact(
+        tuple(n for n in cfg.packages if n in hits),
+        affected,
+        False,
+        (),
+        (note,),
+        dict.fromkeys(affected, "lockfile"),
+    )

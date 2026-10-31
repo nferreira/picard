@@ -333,7 +333,7 @@ def test_the_plan_records_the_revisions():
     assert build_plan(cfg, 1, titles=["fix: x (ABC-1)"], changed_files=["x"])["revisions"] is None
 
 
-# ── lockfile narrowing placeholder (fails closed) ──────────────────────────────────────
+# ── lockfile narrowing without revisions (fails closed) ──────────────────────────────────────
 
 
 def narrow_cfg(**paths) -> cfgmod.Config:
@@ -361,7 +361,8 @@ def test_a_narrow_lockfile_widens_to_everything_until_it_can_be_attributed(files
     lockfiles = [f for f in files if f.endswith((".lock", ".json"))]
     assert impact.global_files == tuple(lockfiles)
     assert impact.notes == tuple(
-        f"{path} changed and cannot be attributed to packages yet: running everything"
+        f"{path} changed and cannot be attributed to packages "
+        "(lockfile narrowing needs --base or --local): running everything"
         for path in lockfiles
     )
 

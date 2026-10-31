@@ -32,6 +32,17 @@ inputs:
   body:
     description: PR body, scanned for a BREAKING CHANGE footer.
     default: ""
+  labels:
+    description: >-
+      JSON array of the PR's label names (toJSON of the labels' names). A label equal to
+      [labels] full forces a full run. Passed through the environment as PICARD_LABELS.
+    default: ""
+  comment:
+    description: Append the plan as a PR comment (markdown) to this file. Empty writes nothing.
+    default: ""
+  metrics:
+    description: Write this tier's metrics (one JSON object) to this file. Empty writes nothing.
+    default: ""
 
 outputs:
   plan:
@@ -72,12 +83,17 @@ runs:
       env:
         PICARD_TITLE: ${{ inputs.title }}
         PICARD_BODY: ${{ inputs.body }}
+        PICARD_LABELS: ${{ inputs.labels }}
         IN_TIER: ${{ inputs.tier }}
         IN_CONFIG: ${{ inputs.config }}
         IN_BASE: ${{ inputs.base }}
         IN_HEAD: ${{ inputs.head }}
+        IN_COMMENT: ${{ inputs.comment }}
+        IN_METRICS: ${{ inputs.metrics }}
       run: |
         args=(plan --config "$IN_CONFIG" --tier "$IN_TIER" --head "$IN_HEAD" \
           --format text --github-output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY")
         if [ -n "$IN_BASE" ]; then args+=(--base "$IN_BASE"); fi
+        if [ -n "$IN_COMMENT" ]; then args+=(--comment "$IN_COMMENT"); fi
+        if [ -n "$IN_METRICS" ]; then args+=(--metrics "$IN_METRICS"); fi
         picard "${args[@]}"

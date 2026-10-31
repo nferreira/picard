@@ -67,10 +67,11 @@ The host holds no picard code. CI installs a pinned picard in `pipeline-setup-pi
 | `.picard/pipeline.toml` | The policy: runtime, types, profiles, paths, packages, tiers. Per repo. |
 | `src/picard` | Pure function from (config, tier, titles, body, changed files) to a plan. |
 | Graph providers | Read one ecosystem's manifests and return packages, paths and edges: `uv`, `npm`, `cargo`, `go`, `command`. |
-| Impact engines | Map changed files to the packages they affect: `native`, `pants`, `command`. |
-| Executors | Build a suite's command for a package that does not spell it out: `pytest`, `uv-pytest`, `go-test`, `cargo-test`, `pnpm`, `npm`, `make`. |
+| Impact engines | Map changed files to the packages they affect: `native`, `pants`, `command`, `nx`, `turbo`, `moon`, `bazel-diff`. |
+| Executors | Build a suite's command for a package that does not spell it out: `pytest`, `uv-pytest`, `go-test`, `cargo-test`, `pnpm`, `npm`, `make`, and `pants`, `turbo`, `nx`, which hand the suite to the tool and its cache. |
 | `bootstrap.py` | The composition root. It registers the built-ins and the plugins, and nothing else does. |
-| `pipeline-plan` action | Runs picard in Actions, exports `plan`, `matrix`, `extras`, `runtime`, `skip` and writes a job summary. |
+| `pipeline-plan` action | Runs picard in Actions, exports `plan`, `matrix`, `extras`, `runtime`, `skip` and writes a job summary. Inputs `labels` (as `PICARD_LABELS`), `comment` and `metrics` add the PR labels, the plan comment file and the metrics file. |
+| `plan-comment` job | In `pipeline-pr.yml`: posts or updates one sticky PR comment from the plan job's artifact. Not part of the gate. |
 | `pipeline-check-title` action | Validates the PR title with the same parser the plan uses. |
 | `pipeline-run-suite` action | Sets up Python/Node from `[runtime]`, then runs one suite command. |
 | `pipeline-extra` action | Runs one named extra: `secrets`, `workflow-lint`, `semgrep`, `dependency-review`, `link-check`, `breaking-change-checks`. |
@@ -131,7 +132,11 @@ changed files ──────────────────────
 - **Impact engines** (`graph/engines/`) answer "what does this change affect". `native` walks
   the discovered graph: the deepest package that owns a file, then its dependents. `pants` asks
   Pants (`list`, `dependents --transitive`) and sends the files it does not own to a fallback
-  engine. `command` asks any external tool over stdin and stdout.
+  engine. `command` asks any external tool over stdin and stdout. `nx`, `turbo`, `moon` and
+  `bazel-diff` ask those tools, on one shared base (`graph/engines/tool.py`): files the tool does
+  not own and uncommitted files go to the fallback, picard's graph always adds the dependents,
+  and any failure hands the whole question to the fallback. `turbo` and `bazel-diff` read the
+  commits from `self.revisions` and need a git range.
 - **The shared policy** lives in the base class (`ImpactEngine.impact`): a global file such as
   a lockfile affects every package, whatever the engine says. A subclass only implements the
   engine-specific part. An engine never decides what to run, only what is affected.
@@ -182,7 +187,15 @@ Providers, engines and executors are looked up by name in registries
 
 - **Untrusted text never reaches a shell.** PR titles and bodies are attacker-controlled. They
   are passed as action inputs, mapped to `env:` inside the composite actions and read as
-  `$PICARD_TITLE`. No `run:` step interpolates `${{ github.event... }}`.
+  `$PICARD_TITLE`. Labels go the same way, as `PICARD_LABELS`. No `run:` step interpolates
+  `${{ github.event... }}`.
+- **The plan comment job runs no PR code.** `plan-comment` is the only job in
+  `pipeline-pr.yml` with a write token (`pull-requests: write`, nothing else). It has no
+  checkout and no local action: it downloads the plan job's artifact and sends `plan.md` to
+  the GitHub API as a file (`gh api -F body=@body.md`), never interpolated. Every `@` in the
+  comment is followed by a zero-width space, so text from titles or paths mentions nobody. It
+  runs only for PRs from the same repository (a fork PR's token is read-only) and is not in
+  `pipeline-gate`'s `needs`, so a failed comment never blocks a merge.
 - **Commands come from the repo's own `pipeline.toml`**, with the same trust as its workflows
   (a PR that edits it is reviewed like a PR that edits a workflow, and `CODEOWNERS` covers
   `.picard/` and `.github/`). `markers`, `runs_on` and the version strings are validated to
@@ -190,8 +203,8 @@ Providers, engines and executors are looked up by name in registries
 - **Fork PRs** run with a read-only token and no secrets. Do not add `pull_request_target`
   and run PR code in it. They get no `PICARD_TOKEN` either, so a private picard repository
   cannot be installed for them: keep picard readable, or do not run fork PRs.
-- **Least privilege**: workflows default to `contents: read`. Only the release workflow and
-  the nightly failure report raise it, at job or workflow level.
+- **Least privilege**: workflows default to `contents: read`. Only the release workflow, the
+  nightly failure report and the PR plan comment raise it, at job or workflow level.
 - **Checkout without credentials** (`persist-credentials: false`) in every job that does not
   push.
 - **Release tags use a GitHub App token**, so tag-triggered workflows start, and no personal

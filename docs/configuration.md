@@ -99,6 +99,30 @@ also matches `[paths] global`. A listed lockfile counts as covered for
 `[rules_policy] unmapped`. A lockfile change that cannot be attributed to packages runs every
 package, never none.
 
+picard reads the lockfile at the merge base and at the head (the working tree for a file that
+is uncommitted under `--local`), finds the external packages whose resolved version, source or
+dependencies changed, and follows the lockfile's own edges to the workspace members that use
+them. Those members are changed packages (`via lockfile`), and their dependents follow as usual.
+The plan says what it found:
+
+```text
+warning: uv.lock changed httpx 0.27.0 -> 0.28.1: reaches 2 of 3 packages (core, api)
+```
+
+Members map to packages by name for `uv.lock` and `Cargo.lock`, and by path for
+`package-lock.json` (the `""` entry is the package at the lockfile's directory). uv and Cargo
+members are matched only to packages discovered by that provider (`[[discover]] provider = "uv"`
+or `"cargo"`, including a `[[packages]]` entry merged over one); a package of the same name from
+anywhere else runs everything. The change runs everything, with a warning that gives the reason,
+when:
+
+- the change has no commit range: `--files`, `--files-from`, `--staged` and `--working` (use
+  `--base` or `--local`);
+- the lockfile is new or deleted, cannot be read at either revision, or does not parse;
+- a member it reaches is not a picard package, including the uv workspace root, so bumping a
+  root dev tool such as a linter runs everything;
+- a changed package reaches no member, or only hashes or metadata changed.
+
 ## `[labels]`
 
 | Key | Default | Meaning |
@@ -114,12 +138,36 @@ it.
 Labels reach picard as `--label NAME` (repeatable) or, when no `--label` is given, the
 `PICARD_LABELS` environment variable: a JSON array of names (what `toJSON()` gives in a
 workflow), or a comma-separated list. Pass them through `env:`, never interpolated into a shell.
+Matching is case-sensitive: the label must be spelled exactly as in `[labels] full`, so `CI:Full`
+does not force anything when `full = "ci:full"`. The PR workflow passes the labels and re-plans
+when a label is added or removed (`labeled`, `unlabeled`).
 
 ## `[git]`
 
 | Key | Default | Meaning |
 |---|---|---|
 | `unknown_base` | `"full"` | What `--base` does when the base commit is not in the clone and cannot be fetched: `full` runs every package and warns, `fail` stops with exit 2. |
+
+When the `--base` commit, or the history that joins it to `--head`, is missing (a shallow CI
+clone, a branch that was never fetched), picard tries one `git fetch --no-tags origin <base>`,
+with `--unshallow` in a shallow clone and only when a remote `origin` exists. If the base is
+still unknown:
+
+- `full` prints two warnings on stderr and plans as if every package were affected, at the
+  strictest profile (the reason is in the plan's `forced_full`). Without the base there is no
+  diff, so nothing can be narrowed:
+
+  ```
+  picard: warning: base 0123456789abcdef0123456789abcdef01234567 is not in this shallow clone and could not be fetched
+  picard: warning: running every package instead (set [git] unknown_base = "fail" to stop here)
+  ```
+
+- `fail` stops with `picard: base ... could not be fetched` and exit status 2.
+
+An abbreviated SHA can never be fetched, so in a clone that lacks it the base is unknown and
+`full` runs everything: pass full SHAs, as the scaffolded workflows do. A `--head` that is not a
+commit is a typo, not a missing base: it always stops with exit 2. Tiers with
+`compare = "none"` never read the base.
 
 ## `[[discover]]`
 
@@ -177,10 +225,13 @@ Which engine answers "what does this change affect". The graph itself always com
 
 ```toml
 [impact]
-engine   = "pants"     # native (default) | pants | command | a plugin's engine
-command  = "pants"     # pants: the launcher. command engine: the program to ask
-fallback = "native"    # pants: who answers for files Pants does not own
+engine   = "pants"     # native (default) | pants | command | nx | turbo | moon | bazel-diff | a plugin's engine
+command  = "pants"     # pants, nx, turbo, moon, bazel-diff: the launcher (default the tool's name). command engine: the program to ask
+fallback = "native"    # who answers for files the tool does not own, and when it fails
 debug    = false       # trace what the engines return on stderr (or --debug, PICARD_DEBUG=1)
+timeout  = 600         # nx, turbo, moon, bazel-diff: seconds for each call (bazel-diff default 1800)
+bazel     = "bazel"    # bazel-diff only: the Bazel or Bazelisk binary it runs
+workspace = "."        # bazel-diff only: the Bazel workspace, relative to the repository root
 ```
 
 | Engine | Answers with | Needs |
@@ -188,6 +239,19 @@ debug    = false       # trace what the engines return on stderr (or --debug, PI
 | `native` | the discovered graph: owner of each file, then its dependents | nothing |
 | `pants` | `pants list` and `pants dependents --transitive` (import-level for Python). Files Pants does not own go to `fallback`. | Pants on `PATH`, and `picard setup` |
 | `command` | the JSON an external command prints for the changed files, which arrive on stdin separated by NUL | your command |
+| `nx` | `nx show projects --affected --base --head --json` with a git range and nothing uncommitted, otherwise `--files=<the files Nx owns>` (over 100,000 characters: the fallback answers). Projects match packages by name. | Nx (`command = "npx nx"` for a repo-local one) |
+| `turbo` | `turbo ls --affected --output=json` with `TURBO_SCM_BASE` and `TURBO_SCM_HEAD` set. Packages match by name. Needs a git range (`--base`, `--local`): with `--files` the fallback answers. | Turborepo |
+| `moon` | `moon query projects --affected --downstream deep`, the files moon owns on stdin as `{"files": [...], "options": {}}`. Projects match packages by `source` directory. | moon |
+| `bazel-diff` | `generate-hashes` for the base (in a temporary `git worktree`, always removed) and the working tree, then `get-impacted-targets`. `//a/b:c` belongs to the package that owns `a/b`, `@external` targets are ignored. Needs a git range whose head is the checked-out `HEAD`. Packages with a `BUILD` or `BUILD.bazel` at their root are the ones it answers for. | bazel-diff and Bazel |
+
+The four tool engines share one policy. Files owned by a package the tool knows go to the tool,
+the rest to `fallback`. Uncommitted files (`--local`) also go to `fallback`. The tool's answer is
+intersected with picard's packages, then the owners of the files it was given and all their
+dependents from picard's graph are added, so a tool that reports only the changed projects still
+runs their dependents. A missing tool, a non-zero exit, a timeout, an invalid `timeout` or output
+of an unexpected shape hands the whole question to `fallback`, with a note such as
+`nx failed (...); the native engine answered`. The turbo and moon JSON shapes, and moon's stdin
+input, are not documented upstream, which is why anything unexpected counts as a failure.
 
 An engine can make an answer wider but never narrower than the truth: if it fails, times out or
 does not own a file, the fallback answers and the plan carries a note. A global file
@@ -210,13 +274,16 @@ block or per `[[packages]]` entry with `executor = "<name>"`.
 
 | Executor | Runs | Options |
 |---|---|---|
-| `pytest` | `pytest <path> -m "<markers>"` | `launcher`, `linter` |
-| `uv-pytest` | the same through `uv run --no-sync` | `launcher`, `linter` |
+| `pytest` | `pytest <path> -m "<markers>"`; `deps`: `deptry <path>` | `launcher`, `linter`, `deps_checker`, `retries`, `selection = "impacted"`; shards `test` |
+| `uv-pytest` | the same through `uv run --no-sync` | as `pytest` |
 | `go-test` | `go test ./...` and `go vet ./...` in the module | |
 | `cargo-test` | `cargo test` and `cargo check` for the crate | |
-| `pnpm` | `pnpm --filter <package> run test` (`test:baseline` at tier 2) | |
-| `npm` | `npm run <suite> --workspace <package>` | |
+| `pnpm` | `pnpm --filter <package> run test` (`test:baseline` at tier 2); `deps`: `pnpm exec knip ... --workspace <path>` | `deps_checker`, `selection = "changed-since"`; shards `test` |
+| `npm` | `npm run <suite> --workspace <package>`; `deps`: `npx --no-install knip ... --workspace <path>` | `deps_checker`, `selection = "changed-since"`; shards `test` |
 | `make` | `make -C <path> <suite>` | `prefix` for target names |
+| `pants` | `pants lint <path>::` and `pants test <path>::` (`::` at the repo root) | `launcher` (default `pants`), `retries`, `markers` |
+| `turbo` | `turbo run lint\|test --filter=<package>` | `launcher` (default `turbo`) |
+| `nx` | `nx run <package>:lint\|test` | `launcher` (default `nx`) |
 
 ```toml
 [[discover]]
@@ -225,6 +292,62 @@ executor = "cargo-test"
 
 [executors.pytest]
 linter = "ruff check"
+```
+
+Options the built-in executors take on top of the table. Shards, retries and selection change
+the `test` suite only. picard passes each tool's own flag and never splits, retries or selects
+tests itself, so the repo installs the tool.
+
+| Option | Executors | Adds |
+|---|---|---|
+| `shards` (on the package) | `pytest`, `uv-pytest` | ` --splits N --group k` (pytest-split) |
+| | `pnpm`, `npm` | ` -- --shard=k/N` (Jest's flag: the `test` script must run Jest) |
+| `retries` | `pytest`, `uv-pytest` | ` --reruns n` (pytest-rerunfailures). An integer from 0 to 10, default 0, for every tier that uses the executor. Jest has no CLI retry flag, so `pnpm` and `npm` reject `retries`: set retries in the test runner's own config. |
+| `selection` | `pytest`, `uv-pytest`: `"impacted"` | ` --impacted --impacted-module=<module> --impacted-git-mode=branch --impacted-base-branch=<base>` (pytest-impacted). `<module>` is the package name with `-` and `.` replaced by `_`. |
+| | `pnpm`, `npm`: `"changed-since"` | ` --changedSince=<base>` (Jest), after the same single `--` as the shard flag |
+| `deps_checker` | `pytest`, `uv-pytest` | The `deps` suite: `<launcher> <deps_checker> <path>`, default `deptry` |
+| | `pnpm`, `npm` | The `deps` suite through `pnpm exec` or `npx --no-install`, with `--workspace <path>`; default `knip --include dependencies,unlisted` |
+
+`selection` takes effect only in a tier with `selection = true` and a committed git range (see
+`selection` under `[tiers.<N>]`); anywhere else the command runs the whole suite. `<base>` is the
+merge-base commit. The `deps` suite runs only where a tier lists `deps` in its `run`. A Vitest
+repo writes its `test` command by hand, because Vitest's flags were not verified.
+
+```toml
+[executors.uv-pytest]
+retries   = 2
+selection = "impacted"
+
+[executors.pnpm]
+selection = "changed-since"
+
+[tiers.1]
+run       = ["lint", "test", "deps"]
+selection = true
+```
+
+`pants`, `turbo` and `nx` hand the suite to the tool, so its local and remote cache and its
+ordering between packages apply. picard still decides which packages run at each tier. They
+build `lint` and `test` only. turbo and nx ignore the tier's markers, like `pnpm`: a task that
+should filter by tier reads its own configuration. Only Pants shards (`--test-shard=k/N`, k
+counted from 0, right after `test`) and retries (`retries = n` adds
+`--test-attempts-default=n+1`).
+
+Pants also ignores the markers unless `markers = true`, which appends `-- -m "<markers>"`.
+Pants runs pytest once per test file, and a file whose tests the expression all deselects exits
+with code 5, which Pants counts as a failure. A repo that sets `markers = true` must make exit
+code 5 a success itself, with a `pytest_sessionfinish` hook in `conftest.py` or the
+`pytest-custom-exit-code` plugin. picard ships neither. Ignoring the markers only runs more tests.
+
+```toml
+[[discover]]
+provider = "uv"
+executor = "pants"
+
+[executors.pants]
+launcher = "pants"
+retries = 1         # --test-attempts-default=2
+markers = false     # the default: the tier's markers are not passed to pytest
 ```
 
 `picard validate-config` builds each `[executors.<name>]` once: a table for an executor nothing
@@ -268,7 +391,7 @@ test = 'pytest {path} -m "{markers}"'
 |---|---|---|
 | `always` | `false` | `true` adds the package to the affected set of tiers 0 to 2 (`always = true` in the plan's why), for a package whose inputs no graph can see. It does not stop a tier that has no changed files from skipping. |
 | `shards` | `1` | An integer from 1 to 256. The suites the package's executor can split, or an explicit command with a `{shard}` placeholder, become N jobs with ids `<package>:<suite>#k/N`. Anything else runs as one job, with a warning for `test`. `picard run` and `simulate --run` run each suite once, whole. |
-| `test_paths` | `[]` | Globs relative to the package `path` that only hold test files. No `{captures}`. A `[[packages]]` entry's own `test_paths` replaces the one from `[[discover]]`. |
+| `test_paths` | `[]` | Globs relative to the package `path` that only hold test files. No `{captures}`. A `[[packages]]` entry's own `test_paths` replaces the one from `[[discover]]`. Under the native engine, a change whose files in the package all match affects the package and not its dependents; a mixed change, or a file that matches nothing, walks the dependents as before. |
 
 Command placeholders: `{package}`, `{path}`, `{markers}`, and `{shard}` / `{shards}` (the
 job's 1-based shard and the total; both `1` when the suite is not split). Commands run from the

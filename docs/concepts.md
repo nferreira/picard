@@ -55,7 +55,8 @@ Skipping work is only safe if the answer errs on the side of running more. These
 fail closed:
 
 - **A global file runs everything.** A lockfile, the config or a workflow affects every package
-  (`[paths] global`).
+  (`[paths] global`). A lockfile listed under `[lockfiles] narrow` affects only the packages its
+  change reaches, and still runs everything whenever picard cannot tell which those are.
 - **An unmapped file runs everything.** A file no rule, package or docs glob covers follows
   `[rules_policy] unmapped = "full"`.
 - **A title can raise the bar, never lower it.** `docs:` on a PR that edits source still runs
@@ -68,14 +69,25 @@ fail closed:
   or does not own a file, the fallback engine answers, and the plan says so.
 - **Unsafe input runs everything.** A rule capture that is not a plain name, or is missing from
   the inventory, runs everything and warns. It is never turned into a command.
+- **An unknown base runs everything.** When the `--base` commit is not in the clone and one
+  fetch cannot bring it (a shallow clone, an abbreviated SHA), there is no diff to narrow:
+  picard warns and runs every package, or stops with exit 2 under `[git] unknown_base = "fail"`.
 - **A job that had to run and did not fails the gate.** A silent skip cannot go green.
 
 ## Granularity and limits
 
 - The unit is the **package**. A change inside a package runs that package's whole suite for
-  the tier. Under the native engine a test-only change also runs the dependents. Pants is more
-  precise because nothing imports a test file. Test-level selection is on the
-  [roadmap](improvements.md).
+  the tier. Under the native engine a test-only change also runs the dependents, unless the
+  package lists its test files in `test_paths`: then a change to those files alone runs only
+  that package. Pants is precise without it because nothing imports a test file. Test-level
+  selection, inside a suite, is opt-in: a tier with `selection = true` and an executor
+  `selection` option pass the tool's flag (pytest-impacted, Jest `--changedSince`). It needs a
+  committed git range (`--base`, or `--local` with no uncommitted files); without one, or in a
+  forced full run, whole suites run. A tier with `compare = "none"` cannot select, so the
+  starter's tiers 3 and 4 always run whole suites, as the safety net for what selection misses.
+- A lockfile is **global** (every package) unless it is listed under `[lockfiles] narrow`. Then
+  it is narrowed to the workspace members whose resolved dependencies changed. Narrowing needs
+  the old text, so it works with `--base` and `--local` only.
 - The graph is as precise as the dependencies a package declares. An import nobody declared
   is invisible to the native engine. Pants infers imports for Python.
 - Edges that live in no manifest (a frontend that consumes an API's OpenAPI file) are written
@@ -87,7 +99,7 @@ picard is the decision layer, not a build system. It does not cache, build or di
 
 | Reused | Owned by picard |
 |---|---|
-| The package graph (uv, pnpm, npm, yarn, cargo, go, or Pants as an engine) | Mapping a title and paths to a profile |
+| The package graph (uv, pnpm, npm, yarn, cargo, go, or Pants, Nx, Turborepo, moon or bazel-diff as an engine) | Mapping a title and paths to a profile |
 | Test selection (pytest markers, `go test`, `cargo test`, `node --test`) | The six tiers and the plan |
 | Install and run (uv, pnpm, cargo, go) | The gate that makes skips safe |
 | Linters and scanners (ruff, actionlint, gitleaks, semgrep) | Rules for files with no code |

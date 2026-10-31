@@ -105,29 +105,40 @@ Verdict: **Integrate**. Effort: S for Nx, then M once for the rest.
 **How it will be used**
 
 ```toml
-# .picard/pipeline.toml          # planned
+# .picard/pipeline.toml          # today
 [impact]
 engine   = "nx"
+command  = "npx nx"              # default "nx"
 fallback = "native"
 ```
 
+Illustrative (the tools were tested with fakes, not run for real):
+
 ```sh
-picard doctor                                       # planned: ok: the 'nx' impact engine is ready
-picard simulate --files libs/ui/src/button.ts       # planned: affected packages are marked `via nx`
-picard plan --tier 1 --base origin/main --format text   # planned: the same engine in CI
+picard doctor                                       # today: picard: ok: the 'nx' impact engine is ready
+picard simulate --files libs/ui/src/button.ts       # today: asks `nx show projects --affected --files=...`; packages are marked `via nx`
+picard plan --tier 1 --base origin/main --format text   # today: asks `nx show projects --affected --base=<merge-base> --head=HEAD`
 ```
 
 For a git-based tool:
 
 ```toml
 [impact]
-engine = "turbo"                                    # planned
+engine = "turbo"                                    # today (also "moon", "bazel-diff")
 ```
 
 ```sh
-picard plan --tier 1 --base origin/main --head HEAD     # planned: asks `turbo query affected --base origin/main --head HEAD`
-picard simulate --files apps/web/src/a.ts               # planned, illustrative output:
-# ! turbo answers from git refs only: the native engine answered for --files
+picard plan --tier 1 --base origin/main --head HEAD     # today: runs `turbo ls --affected --output=json` with TURBO_SCM_BASE=<merge-base>, TURBO_SCM_HEAD=HEAD
+picard simulate --files apps/web/src/a.ts               # today, illustrative output:
+# ! turbo answers from git refs only: the native engine answered
+```
+
+When the tool is missing or fails, the fallback answers everything (illustrative output):
+
+```sh
+picard simulate --files libs/ui/src/button.ts
+# picard: warning: Nx is not installed: 'nx' was not found. Using the native engine instead. ...
+# ! Nx is not installed: 'nx' was not found; the native engine answered
 ```
 
 ### 2. Lockfile-aware narrowing
@@ -154,24 +165,33 @@ Verdict: **Adopt**. Effort: M. No tool provides this for picard, because it is t
 **How it will be used**
 
 ```toml
-# .picard/pipeline.toml           # planned
+# .picard/pipeline.toml           # today
 [paths]
 global = [".picard/pipeline.toml", ".github/workflows/**"]   # lockfiles are no longer listed here
 
 [lockfiles]
-narrow = ["uv.lock", "Cargo.lock", "package-lock.json"]      # anything else stays "run everything"
+narrow = ["uv.lock", "Cargo.lock", "**/package-lock.json"]   # anything else stays "run everything"
 ```
 
 ```sh
-# A Dependabot PR bumps one library          # planned, illustrative output
-picard plan --tier 1 --base origin/main \
+# A Dependabot PR bumps one library          # today, real output from a three-package uv workspace
+picard plan --tier 1 --base main \
   --title "chore(deps): bump httpx from 0.27 to 0.28 (ABC-9)" --format text
-#   packages: some-api, component-def
-#   reason:   uv.lock changed httpx 0.27 -> 0.28, used by 2 of 7 packages
+#   packages: core, api
+#   impact: api is affected through api -> core (via lockfile)
+#   impact: core owns a changed file (via lockfile)
+#   warning: uv.lock changed httpx 0.27.0 -> 0.28.1: reaches 2 of 3 packages (core, api)
 
-# A lockfile picard cannot parse
-#   reason:   pnpm-lock.yaml changed and cannot be attributed to packages: running everything
+# The same lockfile without a commit range (--files) # today, real output
+#   packages: core, api, web
+#   impact: everything is affected: uv.lock cannot be attributed to packages
+#   warning: uv.lock changed and cannot be attributed to packages (lockfile narrowing needs --base or --local): running everything
 ```
+
+`pnpm-lock.yaml` and `yarn.lock` are rejected under `narrow` and stay in `[paths] global`. A
+new or deleted lockfile, one that does not parse, a bump that reaches a workspace member that is
+not a picard package (such as the uv workspace root's dev tools), a change used by no member and
+a hash-only change all run everything with the reason in the warning.
 
 ### 3. Test sharding
 
@@ -185,8 +205,10 @@ Verdict: **Integrate**. Effort: M. Already on the [roadmap](improvements.md).
 
 - A `shards = N` key per package expands a suite into N matrix jobs. picard's plan is already a
   matrix, so this is a plan field and nothing else changes in the workflows.
-- Each executor passes the tool's own flag: `pytest-split` for pytest, `--shard=k/N` for Jest
-  and Vitest, `--test-shard` for Pants. picard never splits tests itself.
+- Each executor passes the tool's own flag: `pytest-split` for pytest, Jest's `--shard=k/N` for
+  the pnpm and npm executors, `--test-shard` for Pants. picard never splits tests itself. A
+  Vitest repo writes a `test` command with a `{shard}` placeholder, because Vitest's flags were
+  not verified.
 - Balance by recorded duration later, from the nightly run's timing file. The first version
   splits by the splitter's default.
 - A local `picard run` runs the whole suite once, because shards exist to parallelise CI.
@@ -194,7 +216,7 @@ Verdict: **Integrate**. Effort: M. Already on the [roadmap](improvements.md).
 **How it will be used**
 
 ```toml
-# .picard/pipeline.toml           # planned
+# .picard/pipeline.toml           # today
 [[packages]]
 name     = "some-api"
 path     = "apps/some-api"
@@ -203,13 +225,18 @@ shards   = 4
 ```
 
 ```sh
-picard simulate --files apps/some-api/src/some_api/handlers.py --commands   # planned, illustrative output:
+picard simulate --files apps/some-api/src/some_api/handlers.py --tiers 1 --commands   # today, real output (trimmed):
 # tier 1 (pr-fast-gate) commands:
-#   some-api:test#1/4   uv run --no-sync pytest apps/some-api -m "unit or integration" --splits 4 --group 1
-#   some-api:test#2/4   uv run --no-sync pytest apps/some-api -m "unit or integration" --splits 4 --group 2
-#   ...
-picard run --tier 1 --local            # runs the whole suite once, not four shards
+#   some-api:lint               uv run --no-sync ruff check apps/some-api
+#   some-api:test#1/4           uv run --no-sync pytest apps/some-api -m "unit or integration" --splits 4 --group 1
+#   some-api:test#2/4           uv run --no-sync pytest apps/some-api -m "unit or integration" --splits 4 --group 2
+#   some-api:test#3/4           uv run --no-sync pytest apps/some-api -m "unit or integration" --splits 4 --group 3
+#   some-api:test#4/4           uv run --no-sync pytest apps/some-api -m "unit or integration" --splits 4 --group 4
+picard run --tier 1 --local            # today: runs the whole suite once, not four shards
 ```
+
+The repo installs pytest-split; picard only passes its flags. The pnpm and npm executors pass
+` -- --shard=k/N` to the package's `test` script.
 
 ### 4. A first-class "list what is affected" command
 
@@ -230,22 +257,29 @@ extends picard past tests: any step can use the answer.
 **How it will be used**
 
 ```sh
-picard affected --base origin/main --format names          # planned, illustrative output:
-# component-abc
+# today, real output (a scratch repo with three packages, a commit that changes component-def)
+picard affected --base main --format names
 # component-def
 # some-api
 
-picard affected --files apps/landing-page/src/page.js --format paths     # planned
+picard affected --files apps/landing-page/src/page.js --format paths     # today, real
 # apps/landing-page
 
-picard affected --base origin/main --format matrix         # planned
-# {"include":[{"name":"some-api","path":"apps/some-api"},{"name":"component-def","path":"packages/component-def"}]}
+picard affected --base main --format matrix         # today, real
+# {"include":[{"name":"component-def","path":"packages/component-def"},{"name":"some-api","path":"apps/some-api"}]}
+
+picard affected --files README.md --format matrix   # today, real: nothing affected
+# {"include":[]}
 ```
+
+Names and paths come in config order, one per line, and print nothing when the set is empty.
+`--format json` is versioned (`schema` 1) and adds the provider, `decided_by` and the chain of
+each package; see [simulation](simulation.md#listing-what-is-affected).
 
 Build and deploy only what changed:
 
 ```yaml
-# a workflow job        # planned
+# a workflow job        # today
 - id: affected
   env:
     BASE: ${{ github.event.pull_request.base.sha }}
@@ -272,20 +306,37 @@ keeps today's error for teams that prefer a red job.
 **How it will be used**
 
 ```toml
-# .picard/pipeline.toml           # planned
+# .picard/pipeline.toml           # today
 [git]
 unknown_base = "full"      # full (default) | fail
 ```
 
 ```sh
-# Today (real output from a depth-1 clone):
-picard plan --tier 1 --base c559629 --head HEAD --title "fix: x (ABC-1)"
-# picard: git diff --name-only --no-renames -z c559629...HEAD failed: fatal: ambiguous argument ...   (exit 2)
+# Before (real output from a depth-1 clone, a base that is not in it):
+picard plan --tier 1 --base <a commit> --head HEAD --title "fix: x (ABC-1)"
+# picard: git diff --name-only --no-renames -z <a commit>...HEAD failed: fatal: ambiguous argument ...   (exit 2)
 
-# Planned, illustrative output:
-# picard: warning: base c559629 is not in this shallow clone and could not be fetched
+# today, real output from a depth-1 clone of a scratch repo, a full SHA that origin does not have
+picard plan --tier 1 --base 0123456789abcdef0123456789abcdef01234567 --title "fix: x (ABC-1)" --format text
+# picard: warning: base 0123456789abcdef0123456789abcdef01234567 is not in this shallow clone and could not be fetched
 # picard: warning: running every package instead (set [git] unknown_base = "fail" to stop here)
+# tier 1 (pr-fast-gate)
+#   profile: full   release: patch
+#   packages: component-def, some-api, landing-page
+#   ...
+#   note: base 0123456789abcdef0123456789abcdef01234567 is not in this shallow clone and could not be fetched
+
+# today, real: the full SHA of a commit origin has is fetched (--unshallow), and the diff narrows
+picard plan --tier 1 --base <full sha of the base> --title "fix: x (ABC-1)" --format text
+#   packages: component-def, some-api
+
+# today, real: with unknown_base = "fail" (that clone is no longer shallow after the fetch above)
+# picard: base 0123456789abcdef0123456789abcdef01234567 is not in this clone and could not be fetched   (exit 2)
 ```
+
+An abbreviated SHA can never be fetched, so in a clone that lacks it the base is unknown and
+`full` runs everything. The workflows pass full SHAs. A `--head` that is not a commit always
+stops with exit 2.
 
 ### 6. Force a full run, mark something unskippable
 
@@ -357,10 +408,16 @@ Labels also come from `PICARD_LABELS` (a JSON array, or a comma-separated list) 
 `--label` is given, so a workflow passes them through `env:`.
 
 ```yaml
-# in the plan step of pipeline-pr.yml      # planned
+# pipeline-pr.yml      # today
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, ready_for_review, labeled, unlabeled]
+# ... in both plan steps:
 with:
-  labels: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+  labels: ${{ toJSON(github.event.pull_request.labels.*.name) }}   # -> env PICARD_LABELS in the action
 ```
+
+The label must be spelled exactly as in `[labels] full`: matching is case-sensitive.
 
 ### 7. A test-only change should not run the dependents
 
@@ -383,7 +440,7 @@ already behaves this way for Python.
 **How it will be used**
 
 ```toml
-# .picard/pipeline.toml           # planned
+# .picard/pipeline.toml           # today
 [[packages]]
 name       = "component-def"
 path       = "packages/component-def"
@@ -392,10 +449,14 @@ test_paths = ["tests/**", "**/test_*.py", "**/conftest.py"]
 
 ```sh
 picard simulate --files packages/component-def/tests/unit/test_formatter.py
-# today (native engine, real):      affected: component-def, some-api
-# planned (native engine):          affected: component-def
+# without test_paths (native engine, real):  affected: component-def, some-api
+# with test_paths (native engine), today:    affected: component-def
 #   WHY  component-def owns a changed file (test files only: dependents are not affected) (via native)
 ```
+
+The WHY line comes from a real run in a scratch repository with the same layout, with the
+package names changed to match (there they were `core` and its dependent `api`). A change that also touches a source file, or a file `test_paths` does not
+match, runs the dependents as before, and so does any error while matching.
 
 ### 8. Executors that delegate to a tool with a cache
 
@@ -412,10 +473,17 @@ Add executors that hand a package's suite to the tool: `pants` (`pants test {pat
 which packages run at each tier. The tool then applies its local and remote cache and its task
 ordering. An explicit command in `[packages.commands]` still wins over an executor.
 
+Each builds `lint` and `test`, with a `launcher` option (default the tool's name). Pants also
+shards (`--test-shard=k/N`, k from 0) and retries (`--test-attempts-default`). turbo and nx
+ignore the tier's markers. So does Pants unless `markers = true`: Pants runs pytest once per
+file, and a file whose tests `-m` all deselects exits 5, which Pants counts as a failure. A repo
+that turns `markers` on must make exit 5 a success itself (a `pytest_sessionfinish` hook in
+`conftest.py`, or `pytest-custom-exit-code`). picard ships neither.
+
 **How it will be used**
 
 ```toml
-# .picard/pipeline.toml           # planned
+# .picard/pipeline.toml           # today
 [[discover]]
 provider = "uv"
 executor = "pants"
@@ -426,12 +494,19 @@ launcher = "pants"
 
 ```sh
 picard simulate --files packages/component-def/src/component_def/formatter.py --commands
-# today (real output, executor "uv-pytest"):
-#   component-def:test   uv run --no-sync pytest packages/component-def -m "unit"
-# planned (executor "pants"):
-#   component-def:test   pants test packages/component-def::
+# today (real output, executor "pants", tier 0):
+#   component-def:lint          pants lint packages/component-def::
+#   component-def:test          pants test packages/component-def::
+#   some-api:lint               pants lint apps/some-api::
+#   some-api:test               pants test apps/some-api::
 
-# Turborepo or Nx instead:
+# the two jobs picard emits for `shards = 2`, run with Pants 2.33.1 (real output):
+pants test --test-shard=0/2 packages/component-def::
+#   ✓ packages/component-def/tests/unit/test_formatter.py:tests succeeded in 0.26s.
+pants test --test-shard=1/2 packages/component-def::
+#   ✓ packages/component-def/tests/integration/test_roundtrip.py:tests succeeded in 0.24s.
+
+# Turborepo or Nx instead (today, generated commands; the tools were not run):
 #   @demo/ui-kit:test    turbo run test --filter=@demo/ui-kit
 #   ui-kit:test          nx run ui-kit:test
 ```
@@ -446,7 +521,7 @@ nobody declared is a silent under-test.
 
 Verdict: **Integrate**. Effort: S to M.
 
-Reuse the checkers that exist: `deptry` for Python and `knip` or `depcheck` for JavaScript. They
+Reuse the checkers that exist: `deptry` for Python and `knip` for JavaScript. They
 run as a named check that a tier lists in `run`, which is a mechanism picard already has. picard
 adds the defaults so nobody writes the command: the Python executors get a `deps` suite and the
 JavaScript executors a `deps` suite, both off until a tier lists them.
@@ -468,11 +543,21 @@ run = ["lint", "test", "deps"]
 picard plan --tier 1 --base origin/main --format text   # today: `deps` appears as a suite per affected package
 ```
 
-Planned: the default is built in, so only the tier line is needed.
+Today the default is built in, so only the tier line is needed: the `pytest` and `uv-pytest`
+executors run `deptry <path>` and the `pnpm` and `npm` executors run
+`knip --include dependencies,unlisted --workspace <path>`. Set `deps_checker` under
+`[executors.<name>]` to run something else. picard uses knip rather than depcheck, which is no
+longer maintained.
 
 ```toml
 [tiers.1]
-run = ["lint", "test", "deps"]         # planned: `deps` comes from the executor
+run = ["lint", "test", "deps"]         # today: `deps` comes from the executor
+```
+
+```sh
+picard simulate --base main --tiers 1 --commands   # today, real output (trimmed):
+#   some-api:deps               uv run --no-sync deptry apps/some-api
+#   @demo/ui-kit:deps           pnpm exec knip --include dependencies,unlisted --workspace packages/ui-kit
 ```
 
 ### 10. Flaky tests
@@ -485,14 +570,16 @@ need Nx Cloud). Buildkite and Develocity track and quarantine flaky tests.
 Verdict: **Integrate**. Effort: S. Already on the [roadmap](improvements.md).
 
 Take the cheap, local half. A `flaky` marker keeps a test out of the blocking tiers, and an
-executor `retries` option adds the tool's own retry flag (`pytest-rerunfailures`,
-`jest --retries`) for the tier that runs it. Tracking and quarantine analytics belong to the
-products that do them.
+executor `retries` option adds the tool's own retry flag (`--reruns` from pytest-rerunfailures,
+which the repo installs) to the `test` suite of every tier that uses the executor. Jest has no
+CLI retry flag, so JavaScript retries stay in the test runner's own config and the `pnpm` and
+`npm` executors reject `retries`. Tracking and quarantine
+analytics belong to the products that do them.
 
 **How it will be used**
 
 ```toml
-# .picard/pipeline.toml           # planned: the markers part works today
+# .picard/pipeline.toml           # today
 [tiers.1]
 markers = "(unit or integration) and not flaky"      # blocks the PR without flaky tests
 
@@ -500,12 +587,14 @@ markers = "(unit or integration) and not flaky"      # blocks the PR without fla
 markers = ""                                          # nightly runs everything, flaky included
 
 [executors.pytest]
-retries = 2                                           # planned: adds --reruns 2
+retries = 2                                           # adds --reruns 2 to the test suite
 ```
 
 ```sh
-picard simulate --commands          # nightly line, planned:
-#   some-api:test   pytest apps/some-api --reruns 2
+picard simulate --files apps/some-api/src/some_api/handlers.py --tiers 4 --commands   # today, real output:
+# tier 4 (nightly) commands:
+#   some-api:test               pytest apps/some-api --reruns 2
+#   @demo/ui-kit:test           pnpm --filter @demo/ui-kit run test
 ```
 
 ### 11. Test-level selection
@@ -522,30 +611,36 @@ coverage-based selection.
 
 Verdict: **Integrate**, opt-in. Effort: M. The least certain payoff.
 
-None of this is picard's to build. Add an opt-in executor option that appends the tool's flag,
-enabled per tier, used at tiers 0 and 1 only. Tiers 3 and 4 stay the full-run safety net. It
-needs the base, so it works with `--base` and `--local`.
+None of this is picard's to build. An opt-in executor option appends the tool's flag, and a
+tier turns it on with `selection = true`, meant for tiers 0 and 1. A tier with
+`compare = "none"` cannot select, so the starter's tiers 3 and 4 stay the full-run safety net.
+It needs a committed git range: `--base`, or `--local` with no uncommitted files, because
+pytest-impacted's branch mode ignores uncommitted files and would select fewer tests than the
+change needs. Without
+one, and in a forced full run (`ci:full`), whole suites run and the plan warns. The base passed
+is the merge-base commit.
 
 **How it will be used**
 
 ```toml
-# .picard/pipeline.toml           # planned
-[executors.jest]
-selection = "related"            # adds --changedSince=<base>
+# .picard/pipeline.toml           # today
+[executors.pnpm]
+selection = "changed-since"      # adds --changedSince=<base> (Jest)
 
-[executors.pytest]
-selection = "impacted"           # adds --impacted --impacted-module=<package>
+[executors.uv-pytest]
+selection = "impacted"           # adds --impacted --impacted-module=<module> ... (pytest-impacted)
 
 [tiers.1]
 selection = true
-[tiers.3]
-selection = false                # the merge queue always runs the whole suite
 ```
 
 ```sh
-picard simulate --base origin/main --commands     # tier 1 line, planned:
-#   some-api:test   uv run --no-sync pytest apps/some-api -m "unit or integration" --impacted --impacted-module=some_api
-#   @demo/ui-kit:test   pnpm --filter @demo/ui-kit run test -- --changedSince=origin/main
+picard simulate --base main --tiers 1 --commands     # today, real output (trimmed, <base> is the merge-base sha):
+#   some-api:test               uv run --no-sync pytest apps/some-api -m "unit or integration" --impacted --impacted-module=some_api --impacted-git-mode=branch --impacted-base-branch=<base>
+#   @demo/ui-kit:test           pnpm --filter @demo/ui-kit run test -- --changedSince=<base>
+picard simulate --base main --label ci:full --tiers 1 --commands   # today, real output (trimmed): a forced run selects nothing
+#   some-api:test               uv run --no-sync pytest apps/some-api -m "unit or integration"
+#   @demo/ui-kit:test           pnpm --filter @demo/ui-kit run test
 ```
 
 ### 12. Incremental merge queue
@@ -638,15 +733,18 @@ each task. picard still decides which packages run.
 ```
 
 ```toml
-# .picard/pipeline.toml           # planned (item 8)
+# .picard/pipeline.toml           # today (item 8)
 [[discover]]
 provider = "npm"
 executor = "turbo"
 ```
 
 ```sh
-picard simulate --files packages/ui-kit/src/index.js --commands   # planned, illustrative output:
+picard simulate --files packages/ui-kit/src/index.js --commands   # today (real output, tier 1):
 #   @demo/admin-frontend:test   turbo run test --filter=@demo/admin-frontend    # turbo builds ui-kit first
+#   @demo/landing-page:test     turbo run test --filter=@demo/landing-page
+#   @demo/ui-kit:test           turbo run test --filter=@demo/ui-kit
+# (lint lines omitted; turbo itself was not run)
 ```
 
 ### 15. Result caching and a remote cache
@@ -667,7 +765,7 @@ addition to the run-suite action, and is already on the [roadmap](improvements.m
 **How it will be used**
 
 ```toml
-# .picard/pipeline.toml           # planned (item 8)
+# .picard/pipeline.toml           # today (item 8)
 [[discover]]
 provider = "npm"
 executor = "turbo"
@@ -728,18 +826,36 @@ Verdict: **Adopt**, small. Effort: S to M. The comment is already on the
 **How it will be used**
 
 ```sh
-picard plan --tier 1 --base origin/main --comment plan.md --metrics metrics.json    # planned
+# today, real output (a scratch repo with three packages, a commit that changes component-def)
+picard plan --tier 1 --base main --title "fix: def (ABC-1)" --comment plan.md --metrics metrics.json
 cat metrics.json
-# {"tier":1,"packages_total":7,"packages_selected":3,"suites_total":12,"suites_selected":6,"selected_pct":50}
+# {"schema":1,"tier":1,"packages_total":3,"packages_selected":2,"suites_total":3,"suites_selected":2,"jobs":2,"selected_pct":67}
 ```
 
+`--comment` appends one section per tier (the job summary's markdown, with every `@` followed
+by a zero-width space so nothing in it mentions anyone). `--metrics` overwrites the file with
+one JSON object. `jobs` counts shards and rule actions; the suite counts do not.
+
 ```yaml
-# a job that never runs PR code         # planned
-permissions: { pull-requests: write }
-steps:
-  - uses: ./.github/actions/pipeline-comment
-    with: { file: plan.md }
+# pipeline-pr.yml, a job that never runs PR code: no checkout, no local action      # today
+plan-comment:
+  needs: plan
+  if: github.event.pull_request.head.repo.full_name == github.repository   # forks: read-only token
+  permissions:
+    pull-requests: write
+  steps:
+    - uses: actions/download-artifact@v8
+      with: { name: pipeline-plan }     # plan.md and metrics-*.json from the plan job
+    - env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        PR: ${{ github.event.pull_request.number }}
+      run: |
+        # find the comment holding <!-- picard-plan --> by github-actions[bot], PATCH it or POST one,
+        # with the body sent as a file: gh api ... -F body=@body.md
 ```
+
+The job is not in `pipeline-gate`'s `needs`, so a failed comment never blocks a merge.
 
 ### 18. Per-package releases in a monorepo
 

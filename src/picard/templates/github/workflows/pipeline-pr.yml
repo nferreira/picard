@@ -6,12 +6,14 @@ name: Pipeline · PR
 # Both read one plan built by .picard/ from the PR title and the changed files.
 #
 # Branch protection requires exactly one check from this workflow: `pipeline-gate`.
+# `plan-comment` posts the plan as one sticky PR comment; it is not part of the gate.
 
 on:
   pull_request:
     branches: [main]
-    # `edited` re-plans when the title changes, since the title drives the plan.
-    types: [opened, edited, reopened, synchronize, ready_for_review]
+    # `edited` re-plans when the title changes, since the title drives the plan, and
+    # `labeled` / `unlabeled` when a label changes ([labels] full forces a full run).
+    types: [opened, edited, reopened, synchronize, ready_for_review, labeled, unlabeled]
 
 concurrency:
   group: pipeline-pr-${{ github.event.pull_request.number }}
@@ -56,6 +58,10 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      # --comment appends: start from nothing, so no file from the PR reaches the comment.
+      - name: Clear the comment and metrics files
+        shell: bash
+        run: rm -f plan.md metrics-1.json metrics-2.json
       - id: t1
         uses: ./.github/actions/pipeline-plan
         with:
@@ -67,6 +73,9 @@ jobs:
           head: ${{ github.event.pull_request.head.sha }}
           title: ${{ github.event.pull_request.title }}
           body: ${{ github.event.pull_request.body }}
+          labels: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          comment: plan.md
+          metrics: metrics-1.json
       - id: t2
         uses: ./.github/actions/pipeline-plan
         with:
@@ -78,12 +87,26 @@ jobs:
           head: ${{ github.event.pull_request.head.sha }}
           title: ${{ github.event.pull_request.title }}
           body: ${{ github.event.pull_request.body }}
+          labels: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          comment: plan.md
+          metrics: metrics-2.json
       - id: extras
         shell: bash
         env:
           E1: ${{ steps.t1.outputs.extras }}
           E2: ${{ steps.t2.outputs.extras }}
         run: echo "extras=$(jq -cn --argjson a "$E1" --argjson b "$E2" '$a + $b | unique')" >> "$GITHUB_OUTPUT"
+      # The comment and the metrics, for the plan-comment job and for any observability a
+      # team sends them to.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pipeline-plan
+          path: |
+            plan.md
+            metrics-1.json
+            metrics-2.json
+          retention-days: 7
+          overwrite: true
 
   fast-gate:
     name: tier1 · ${{ matrix.id }}
@@ -94,8 +117,10 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix1) }}
     steps:
+      # Full history: test selection flags name the base commit (--changedSince and the like).
       - uses: actions/checkout@v7
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/pipeline-run-suite
         with:
@@ -116,6 +141,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/pipeline-run-suite
         with:
@@ -142,6 +168,40 @@ jobs:
           base: ${{ github.event.pull_request.base.sha }}
           head: ${{ github.event.pull_request.head.sha }}
           body: ${{ github.event.pull_request.body }}
+
+  # The plan as one sticky PR comment. This job holds the only write token in the workflow,
+  # so it runs no code from the PR: no checkout and no local action, only the artifact the
+  # plan job wrote, sent as a file. A fork PR gets a read-only token, so it is skipped
+  # there. It is not in pipeline-gate's needs: a failed comment never blocks a merge.
+  plan-comment:
+    name: plan-comment
+    needs: plan
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: pipeline-plan
+      - name: Post or update the plan comment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          marker='<!-- picard-plan -->'
+          { echo "$marker"; echo; cat plan.md; } > body.md
+          ids=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"$marker\"))) | .id")
+          id=${ids%%$'\n'*}
+          if [ -n "$id" ]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$id" -F body=@body.md > /dev/null
+          else
+            gh api --method POST "repos/$REPO/issues/$PR/comments" -F body=@body.md > /dev/null
+          fi
 
   # The one check to require in branch protection. Failed or cancelled always fails it, and
   # so does a job the plan said must run but that did not succeed.

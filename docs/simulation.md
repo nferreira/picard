@@ -81,11 +81,50 @@ picard run  --tier 1 --local --dry-run
 picard graph
 picard graph --files packages/ui-kit/src/index.js
 picard graph --format mermaid     # paste into a README or PR
+
+# Just the affected packages, for another step (build, deploy, lint only what changed)
+picard affected
+picard affected --base origin/main --format matrix
 ```
 
 `simulate` and `run --tier N` use the same planner and the same commands as CI, so a green
 local run predicts a green PR. They differ from CI only in the environment: CI installs
 dependencies from `[runtime] setup_command` first, locally you set the repo up yourself.
+
+## Listing what is affected
+
+`picard affected` prints the affected set: what the rules, the impact engine, `always = true`
+and a forced full run (`[labels] full`, an unknown base) put in, the same set a tier with
+`packages = "affected"` runs. It takes the same change arguments as `simulate`, and a bare
+`picard affected` means `--local`. It exits 0, also when nothing is affected.
+
+| `--format` | Output |
+|---|---|
+| `names` (default) | One package name per line, in config order. Nothing at all when empty. |
+| `paths` | One package path per line, in config order, without duplicates. Nothing when empty. |
+| `matrix` | One line, GitHub's matrix shape: `{"include":[{"name":...,"path":...}]}`, `{"include":[]}` when empty. |
+| `json` | Versioned (`schema` 1): `source`, `everything`, `packages` (name, path, provider, `decided_by`, `chain`) and `notes`. |
+
+```sh
+# real output, a scratch repo with three packages, a commit that changes component-def
+picard affected --base main
+# component-def
+# some-api
+
+picard affected --base main --format json
+# {
+#   "schema": 1,
+#   "source": "main...HEAD",
+#   "everything": false,
+#   "packages": [
+#     {"name": "component-def", "path": "packages/component-def", "provider": "manual",
+#      "decided_by": "native", "chain": ["component-def"]},
+#     {"name": "some-api", "path": "apps/some-api", "provider": "manual",
+#      "decided_by": "native", "chain": ["some-api", "component-def"]}
+#   ],
+#   "notes": []
+# }
+```
 
 ## Reading a simulation
 

@@ -134,6 +134,22 @@ profile = "light"
 globs = ["pyproject.toml", "uv.lock", "package.json", "pnpm-lock.yaml", "go.mod", "go.sum"]
 profile = "deps"
 
+# Lockfiles picard attributes to the packages whose locked dependencies changed, instead of
+# running every package. Only uv.lock, Cargo.lock and package-lock.json; anything it cannot
+# attribute still runs every package.
+# [lockfiles]
+# narrow = ["uv.lock", "**/package-lock.json"]
+
+# A PR label that runs everything for that PR, at the strictest profile. "" disables it.
+# The label must be spelled exactly as here (case-sensitive).
+# [labels]
+# full = "ci:full"
+
+# When the --base commit is not in the clone and one fetch cannot bring it:
+# "full" (default) runs every package with a warning, "fail" stops with exit 2.
+# [git]
+# unknown_base = "full"
+
 # ── Packages: the units tests run against ───────────────────────────────────────────────
 # Add one [[packages]] entry per unit of your repo. A single-package repo uses path = ".".
 # In a monorepo list each package and its depends_on, so a change in a library also tests
@@ -162,8 +178,18 @@ test = 'python -m pytest -m "{markers}"'
 # path = "apps/api"
 # depends_on = ["core"]
 # baseline = true
+# shards = 4                   # the test suite runs as 4 matrix jobs: {shard} of {shards}
+# test_paths = ["tests/**"]    # a change only here does not run api's dependents
 # [packages.commands]
-# test = 'python -m pytest apps/api -m "{markers}"'
+# test = 'python -m pytest apps/api -m "{markers}" --splits {shards} --group {shard}'
+#
+# A package whose inputs no graph can see, in every PR's affected set:
+# [[packages]]
+# name = "db-migrations"
+# path = "db"
+# always = true
+# [packages.commands]
+# test = "make -C db check"
 
 # Tier 2 also runs these packages when matching files change (the "must-pass list from
 # path rules"), on top of the affected ones.
@@ -189,6 +215,9 @@ compare = "pr-base"
 packages = "affected"
 markers = "unit or integration"
 run = ["lint", "test"]
+# true: executors that can select tests run only those changed since the PR base inside
+# each suite. Whole suites run when there is no committed range or the run is forced full.
+# selection = false
 
 [tiers.2]
 name = "pr-baseline"
