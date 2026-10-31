@@ -169,7 +169,11 @@ def fake_cfg(root: Path, names=("a", "b", "c"), edges=None) -> SimpleNamespace:
     packages = {n: pkg(n, n) for n in names}
     graph = DependencyGraph({n: (edges or {"a": ("b",)}).get(n, ()) for n in names})
     return SimpleNamespace(
-        packages=packages, global_globs=("uv.lock",), root=root, dependency_graph=lambda: graph
+        packages=packages,
+        global_globs=("uv.lock",),
+        narrow_lockfiles=(),
+        root=root,
+        dependency_graph=lambda: graph,
     )
 
 

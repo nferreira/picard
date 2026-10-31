@@ -60,6 +60,9 @@ fail closed:
   `[rules_policy] unmapped = "full"`.
 - **A title can raise the bar, never lower it.** `docs:` on a PR that edits source still runs
   the full profile, and an unparseable title gets the strictest one.
+- **A label can raise the bar, never lower it.** The `[labels] full` label (`ci:full` by
+  default) runs every package at the strictest profile. No label makes a PR run less, and a
+  package marked `always = true` is in every PR's affected set.
 - **An engine can narrow the answer, never lose a package.** If Pants or a command engine
   fails, is not installed (picard warns, and `picard doctor --how-to-install` says how to fix it)
   or does not own a file, the fallback engine answers, and the plan says so.

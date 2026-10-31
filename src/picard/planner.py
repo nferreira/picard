@@ -10,6 +10,10 @@ Profile selection (PR tiers) takes the strongest of:
   3. the paths touched, so a `docs:` title cannot hide a source change.
 Titles can only raise the bar that paths set, never lower it, and an unparseable title
 falls back to the strictest profile (fail closed).
+
+Labels can only raise it too: the `[labels] full` label (or a reason the caller gives, such as
+a base commit that cannot be found) makes every package affected and runs the strictest
+profile. A package with `always = true` is in every diff tier's affected set.
 """
 
 from __future__ import annotations
@@ -19,12 +23,18 @@ from typing import Any
 
 from picard import commits as cc
 from picard import graph, rules
-from picard.config import RELEASE_ORDER, Config, Package
-from picard.executors import Executor, SuiteContext
+from picard.config import RELEASE_ORDER, Config, Package, Tier
+from picard.executors import Executor, Shard, SuiteContext
 from picard.globs import matches
+from picard.graph.impact import merge as merge_impacts
 
 SCHEMA = 1
 MAX_LISTED_FILES = 200
+MAX_JOBS = 256  # GitHub's limit on the jobs one matrix can expand to
+NO_SELECTION = (
+    "test selection needs a committed git range (--base, or --local with no uncommitted "
+    "files): whole suites run"
+)
 
 
 def _max_release(*values: str) -> str:
@@ -83,12 +93,109 @@ def _executor(cfg: Config, cache: dict[str, Executor], name: str) -> Executor:
     return cache[name]
 
 
-def _render(command: str, package: Package, markers: str) -> str:
+def _render(command: str, package: Package, markers: str, shard: Shard | None = None) -> str:
+    # {shard} and {shards} belong to package commands only; an unsplit suite is shard 1 of 1.
     return (
         command.replace("{package}", package.name)
         .replace("{path}", package.path)
         .replace("{markers}", markers)
+        .replace("{shards}", str(shard.total if shard else 1))
+        .replace("{shard}", str(shard.index if shard else 1))
     )
+
+
+def _package_suites(
+    cfg: Config,
+    executors: dict[str, Executor],
+    package: Package,
+    suite: str,
+    tier: Tier,
+    *,
+    selection_base: str | None = None,
+    expand_shards: bool = False,
+    warnings: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """The suite entries for one suite of one package: none, one, or one per shard.
+
+    An explicit command wins over the executor; `test@<tier name>` overrides `test` for that
+    tier, and an empty value skips the suite there.
+    """
+    key = f"{suite}@{tier.name}"
+    explicit = package.commands.get(key, package.commands.get(suite))
+    executor = None
+    if explicit is None and package.executor:
+        executor = _executor(cfg, executors, package.executor)
+
+    def build(shard: Shard | None) -> str | None:
+        if executor is None:
+            return explicit
+        ctx = SuiteContext(package, suite, tier.name, tier.markers, shard, selection_base)
+        return executor.command(ctx)
+
+    command = build(None)
+    if not command:
+        return []
+    total = package.shards
+    shards: list[Shard | None] = [None]
+    if total > 1 and expand_shards:
+        # The executor passes the tool's own split flag, or the command says where k goes.
+        splits = suite in executor.shardable if executor is not None else "{shard}" in command
+        if splits:
+            shards = [Shard(k, total) for k in range(1, total + 1)]
+        elif suite == "test" and warnings is not None:
+            why = (
+                f"executor '{executor.name}' cannot shard 'test'"
+                if executor is not None
+                else "its 'test' command has no {shard} placeholder"
+            )
+            warnings.append(
+                f"package '{package.name}' has shards = {total} but {why}: it runs as one job"
+            )
+    entries = []
+    for shard in shards:
+        text = command if shard is None else build(shard)
+        if not text:
+            continue
+        entry: dict[str, Any] = {
+            "id": f"{package.name}:{suite}"
+            + (f"#{shard.index}/{shard.total}" if shard is not None else ""),
+            "package": package.name,
+            "suite": suite,
+            "command": _render(text, package, tier.markers, shard),
+        }
+        if shard is not None:
+            entry["shard"], entry["shards"] = shard.index, shard.total
+        entries.append(entry)
+    return entries
+
+
+def _forced(cfg: Config, labels: Sequence[str], full_reasons: Sequence[str]) -> list[str]:
+    """Why this change must run everything, whatever it touches: a label, or the caller says so."""
+    forced = list(full_reasons)
+    if cfg.full_label and cfg.full_label in labels:
+        forced.append(f"label {cfg.full_label} forces a full run")
+    return forced
+
+
+def _metrics(
+    cfg: Config, tier: Tier, executors: dict[str, Executor], selected: Sequence[str], suites: list
+) -> dict[str, int]:
+    """What affected-based selection saved for this tier, in packages and suites."""
+    suites_total = sum(
+        1
+        for package in cfg.packages.values()
+        for suite in tier.run
+        if _package_suites(cfg, executors, package, suite, tier)
+    )
+    suites_selected = len({(s["package"], s["suite"]) for s in suites if s["package"] is not None})
+    return {
+        "packages_total": len(cfg.packages),
+        "packages_selected": len(selected),
+        "suites_total": suites_total,
+        "suites_selected": suites_selected,
+        "jobs": len(suites),
+        "selected_pct": round(100 * suites_selected / suites_total) if suites_total else 0,
+    }
 
 
 def build_plan(
@@ -99,8 +206,17 @@ def build_plan(
     body: str = "",
     changed_files: Sequence[str] = (),
     paths_only: bool = False,
+    revisions: graph.Revisions | None = None,
+    labels: Sequence[str] = (),
+    full_reasons: Sequence[str] = (),
+    expand_shards: bool = True,
 ) -> dict[str, Any]:
-    """Plan one tier. With `paths_only` there is no title: the profile follows the paths alone."""
+    """Plan one tier. With `paths_only` there is no title: the profile follows the paths alone.
+
+    `revisions` are the commits the change lies between (None without a git range), `labels`
+    the PR's labels and `full_reasons` reasons the caller already knows to run everything.
+    `expand_shards=False` (local runs) keeps every suite as one command.
+    """
     if tier_number not in cfg.tiers:
         raise ValueError(f"tier {tier_number} is not defined in the config")
     tier = cfg.tiers[tier_number]
@@ -135,6 +251,12 @@ def build_plan(
             "node_version": cfg.runtime.node_version,
             "setup_command": cfg.runtime.setup_command,
         },
+        "labels": list(labels),
+        "forced_full": [],
+        "revisions": (
+            {"base": revisions.base, "head": revisions.head} if revisions is not None else None
+        ),
+        "metrics": {},
     }
     reasons: list[str] = plan["reasons"]
     warnings: list[str] = plan["warnings"]
@@ -217,11 +339,19 @@ def build_plan(
                     f"(strongest: {strongest_file}); release effect stays '{release}'"
                 )
 
+        forced = _forced(cfg, labels, full_reasons)
+        plan["forced_full"] = forced
+        if forced:
+            # "Run everything for this PR": every package, and every tier the strictest runs.
+            profile = max(cfg.profiles, key=cfg.rank)
+            enabled.update(cfg.profiles[profile].tiers)
+            reasons.extend(forced)
+
         plan["profile"] = profile
         plan["release"] = release
         prof = cfg.profiles[profile]
 
-        if not files:
+        if not files and not forced:
             plan["skip"], plan["skip_reason"] = True, "no changed files"
         elif tier_number not in enabled:
             plan["skip"] = True
@@ -232,13 +362,13 @@ def build_plan(
             extras.extend(cfg.breaking.extras)
         plan["extras"] = _ordered_unique(extras) if not plan["skip"] else []
 
-        impact = _impact(cfg, resolution)
+        impact = _affected(cfg, resolution, revisions, forced)
         warnings.extend(impact.notes)
         plan["rules"] = resolution.rules_summary()
         plan["review"] = [{"rule": r, "files": n} for r, n in resolution.review.items()]
         plan["unmapped"] = resolution.unmapped[:MAX_LISTED_FILES]
         warnings.extend(resolution.warnings)
-        if files:
+        if files or forced:
             plan["impact"] = {
                 "changed": list(impact.changed),
                 "everything": impact.everything,
@@ -247,6 +377,7 @@ def build_plan(
                 "why": [
                     *graph.render_why(impact),
                     *(f"rule '{name}' says full" for name in resolution.full_reasons),
+                    *forced,
                 ],
             }
 
@@ -268,28 +399,32 @@ def build_plan(
             selected = []
 
     plan["packages"] = selected
+    # Test selection narrows inside a suite, so it needs a base that holds every changed line:
+    # with uncommitted files or no git range there is none, and whole suites run (fail closed).
+    # A forced-full run asked for whole suites, so it never selects either.
+    selection_base = None
+    if not tier.selection or plan["forced_full"]:
+        pass
+    elif revisions is not None and not revisions.uncommitted:
+        selection_base = revisions.base
+    else:
+        warnings.append(NO_SELECTION)
     suites = []
     executors: dict[str, Executor] = {}
     for name in selected:
-        package = cfg.packages[name]
         for suite in tier.run:
-            # `test@pr-baseline` overrides `test` for that tier; an empty value skips it there.
-            key = f"{suite}@{tier.name}"
-            command = package.commands.get(key, package.commands.get(suite))
-            explicit = key in package.commands or suite in package.commands
-            if not explicit and package.executor:
-                command = _executor(cfg, executors, package.executor).command(
-                    SuiteContext(package, suite, tier.name, tier.markers)
+            suites.extend(
+                _package_suites(
+                    cfg,
+                    executors,
+                    cfg.packages[name],
+                    suite,
+                    tier,
+                    selection_base=selection_base,
+                    expand_shards=expand_shards,
+                    warnings=warnings,
                 )
-            if command:
-                suites.append(
-                    {
-                        "id": f"{name}:{suite}",
-                        "package": name,
-                        "suite": suite,
-                        "command": _render(command, package, tier.markers),
-                    }
-                )
+            )
     if tier.compare != "none" and not plan["skip"]:
         for action in resolution.actions:
             if tier_number in action.tiers:
@@ -303,19 +438,57 @@ def build_plan(
                     }
                 )
     plan["suites"] = suites
+    if len(suites) > MAX_JOBS:
+        warnings.append(
+            f"tier {tier_number} has {len(suites)} jobs, over GitHub's {MAX_JOBS}-job matrix "
+            "limit: the workflow will fail"
+        )
+    plan["metrics"] = _metrics(cfg, tier, executors, selected, suites)
     return plan
 
 
-def impact_of(cfg: Config, files: Sequence[str]) -> graph.Impact:
-    """What the code graph says a set of files affects, after the rules have had their say."""
-    return _impact(cfg, rules.resolve(cfg, sorted(set(files))))
+def impact_of(
+    cfg: Config,
+    files: Sequence[str],
+    *,
+    revisions: graph.Revisions | None = None,
+    labels: Sequence[str] = (),
+    full_reasons: Sequence[str] = (),
+) -> graph.Impact:
+    """The affected set of a change: the code graph after the rules, `always` and forced-full.
+
+    It is what a tier with `packages = "affected"` runs, before the profile has its say.
+    """
+    resolution = rules.resolve(cfg, sorted(set(files)))
+    return _affected(cfg, resolution, revisions, _forced(cfg, labels, full_reasons))
 
 
-def _impact(cfg: Config, resolution: rules.Resolution) -> graph.Impact:
+def _affected(
+    cfg: Config,
+    resolution: rules.Resolution,
+    revisions: graph.Revisions | None,
+    forced: Sequence[str],
+) -> graph.Impact:
+    """Everything when forced, else the impact plus the packages marked `always = true`."""
+    if forced:
+        return graph.everything(cfg, by="forced")
+    impact = _impact(cfg, resolution, revisions)
+    always = [n for n, p in cfg.packages.items() if p.always and n not in impact.affected]
+    if not always:
+        return impact
+    pinned = graph.Impact(
+        (), {n: (n,) for n in always}, False, (), (), dict.fromkeys(always, "always")
+    )
+    return merge_impacts(cfg, impact, pinned)
+
+
+def _impact(
+    cfg: Config, resolution: rules.Resolution, revisions: graph.Revisions | None = None
+) -> graph.Impact:
     """The code graph's view of the files, plus what rules pinned (`own`) or absorbed (`full`)."""
     if resolution.full:
         return graph.everything(cfg)
-    impact = graph.compute_impact(cfg, resolution.graph_files)
+    impact = graph.compute_impact(cfg, resolution.graph_files, revisions)
     if not resolution.own:
         return impact
     changed = {*impact.changed, *resolution.own}
@@ -331,6 +504,7 @@ def _impact(cfg: Config, resolution: rules.Resolution) -> graph.Impact:
         impact.global_files,
         impact.notes,
         {n: decided[n] for n in cfg.packages if n in decided},
+        impact.test_only,
     )
 
 

@@ -19,6 +19,7 @@ from picard.graph.impact import (
     Impact,
     ImpactEngine,
     NativeImpactEngine,
+    Revisions,
     everything,
     owner,
     owns,
@@ -38,6 +39,7 @@ __all__ = [
     "Impact",
     "ImpactEngine",
     "NativeImpactEngine",
+    "Revisions",
     "compute_impact",
     "discover",
     "everything",
@@ -74,12 +76,15 @@ def discover(
         raise DiscoveryError(f"{provider} provider: {exc}") from exc
 
 
-def compute_impact(cfg: Config, files: Iterable[str]) -> Impact:
-    """What `files` affect, using the impact engine the configuration names."""
+def compute_impact(cfg: Config, files: Iterable[str], revisions: Revisions | None = None) -> Impact:
+    """What `files` affect, using the impact engine the configuration names.
+
+    `revisions` are the commits the change lies between, None when there is no git range.
+    """
     files = list(files)
-    key = ("impact", cfg.impact.engine, tuple(files))
+    key = ("impact", cfg.impact.engine, tuple(files), revisions)
     memo = cfg.registries.memo  # one plan asks the same question several times; ask the engine once
     if key not in memo:
         engine = cfg.registries.engines.get(cfg.impact.engine)(cfg.impact.options, cfg.registries)
-        memo[key] = engine.impact(cfg, files)
+        memo[key] = engine.impact(cfg, files, revisions)
     return memo[key]

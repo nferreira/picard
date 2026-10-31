@@ -83,6 +83,44 @@ footer). The list is enforced by a test against `pipeline-extra`.
 
 Glob syntax: `*` within a segment, `**` across segments, `?` one character.
 
+## `[lockfiles]`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `narrow` | `[]` | Globs of lockfiles picard attributes to the packages a change reaches, instead of treating them as global. Each glob must end in `uv.lock`, `Cargo.lock` or `package-lock.json`; `pnpm-lock.yaml` and `yarn.lock` are rejected and stay global. |
+
+```toml
+[lockfiles]
+narrow = ["uv.lock", "**/package-lock.json"]
+```
+
+Listing a lockfile is the opt-in: a file that matches `narrow` is handled here even when it
+also matches `[paths] global`. A listed lockfile counts as covered for
+`[rules_policy] unmapped`. A lockfile change that cannot be attributed to packages runs every
+package, never none.
+
+## `[labels]`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `full` | `"ci:full"` | A PR label that forces a full run. `""` disables it. No commas, at most 50 characters. |
+
+On a tier that compares against a diff (`compare` is not `none`), the label makes every package
+affected, raises the profile to the strictest one (highest `rank`) and enables its tiers, so
+tier 2 runs too, even when no file changed. The reason is in the plan's `reasons` and
+`forced_full`. Labels can only raise the bar. Tiers 3 and 4 already run everything and ignore
+it.
+
+Labels reach picard as `--label NAME` (repeatable) or, when no `--label` is given, the
+`PICARD_LABELS` environment variable: a JSON array of names (what `toJSON()` gives in a
+workflow), or a comma-separated list. Pass them through `env:`, never interpolated into a shell.
+
+## `[git]`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `unknown_base` | `"full"` | What `--base` does when the base commit is not in the clone and cannot be fetched: `full` runs every package and warns, `fail` stops with exit 2. |
+
 ## `[[discover]]`
 
 Packages and the dependency graph, read from the package managers instead of listed by hand.
@@ -123,6 +161,8 @@ command  = "python3 tools/print_graph.py"
 Any other key in a `[[discover]]` block is an option of its provider. `executor` names how to
 build the suite commands for every package the block finds (see `[executors]` below), so a
 block need not spell them out. A command in `commands` always wins over the executor.
+`test_paths` (see `[[packages]]`) applies to every package the block finds, and is not a
+provider option.
 
 External dependencies are ignored; only edges between workspace members matter. Package names
 are checked against `[@A-Za-z0-9._/-]+` because they are substituted into commands.
@@ -187,6 +227,9 @@ executor = "cargo-test"
 linter = "ruff check"
 ```
 
+`picard validate-config` builds each `[executors.<name>]` once: a table for an executor nothing
+registered, or an option it does not accept, fails there and names the table.
+
 ## `[plugins]`
 
 Add providers, engines or executors without changing picard. A plugin is a Python module with
@@ -213,13 +256,24 @@ name = "api"
 path = "apps/api"          # "." for a single-package repo
 depends_on = ["core"]      # changes in core also affect api
 baseline = true            # always part of tier 2
+always = false             # true: in the affected set of every tier that compares a diff
+shards = 1                 # >1: a shardable `test` suite runs as this many matrix jobs
+test_paths = ["tests/**"]  # globs relative to path that hold only tests
 [packages.commands]
 lint = "ruff check {path}"
 test = 'pytest {path} -m "{markers}"'
 ```
 
-Command placeholders: `{package}`, `{path}`, `{markers}`. Commands run from the repo root
-through `bash -euo pipefail -c`. Only the names a tier lists in `run` execute.
+| Key | Default | Meaning |
+|---|---|---|
+| `always` | `false` | `true` adds the package to the affected set of tiers 0 to 2 (`always = true` in the plan's why), for a package whose inputs no graph can see. It does not stop a tier that has no changed files from skipping. |
+| `shards` | `1` | An integer from 1 to 256. The suites the package's executor can split, or an explicit command with a `{shard}` placeholder, become N jobs with ids `<package>:<suite>#k/N`. Anything else runs as one job, with a warning for `test`. `picard run` and `simulate --run` run each suite once, whole. |
+| `test_paths` | `[]` | Globs relative to the package `path` that only hold test files. No `{captures}`. A `[[packages]]` entry's own `test_paths` replaces the one from `[[discover]]`. |
+
+Command placeholders: `{package}`, `{path}`, `{markers}`, and `{shard}` / `{shards}` (the
+job's 1-based shard and the total; both `1` when the suite is not split). Commands run from the
+repo root through `bash -euo pipefail -c`. Only the names a tier lists in `run` execute. A tier
+over 256 jobs gets a warning: GitHub's matrix cannot hold more.
 
 ## `[[path_rules]]`
 
@@ -239,6 +293,7 @@ packages = ["worker"]      # tier 2 also runs these when the globs match
 | `markers` | Words, spaces and parentheses only. Empty means no filter. |
 | `run` | Command names from `[packages.commands]`. |
 | `extras` | Extra jobs for tiers 3 and 4, which ignore profiles. |
+| `selection` | `true` lets executors select, inside a suite, the tests changed since the base commit. Default `false`, and not allowed with `compare = "none"`. Only with a committed git range (`--base`, or `--local` with no uncommitted files); otherwise whole suites run and the plan warns. A forced full run (`[labels] full`) never selects. |
 
 ## `[[rules]]`, `[actions.*]`, `[inventory.*]`, `[rules_policy]`
 

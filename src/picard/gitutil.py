@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -12,18 +13,36 @@ class GitError(RuntimeError):
     pass
 
 
-def _git(*args: str, cwd: Path | None = None) -> str:
+def _git_bytes(
+    *args: str,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    timeout: float | None = None,
+) -> bytes:
     try:
         result = subprocess.run(  # noqa: S603
             ["git", *args],  # noqa: S607
             cwd=cwd,
+            env=env,
+            timeout=timeout,
             check=True,
             capture_output=True,
-            text=True,
         )
     except subprocess.CalledProcessError as exc:
-        raise GitError(f"git {' '.join(args)} failed: {exc.stderr.strip()}") from exc
+        stderr = exc.stderr.decode("utf-8", errors="replace").strip()
+        raise GitError(f"git {' '.join(args)} failed: {stderr}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise GitError(f"git {' '.join(args)} timed out after {timeout:g} s") from exc
     return result.stdout
+
+
+def _git(
+    *args: str,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    timeout: float | None = None,
+) -> str:
+    return _git_bytes(*args, cwd=cwd, env=env, timeout=timeout).decode("utf-8")
 
 
 def merge_base(a: str, b: str, cwd: Path | None = None) -> str:
@@ -227,3 +246,94 @@ def local_diff(
         uncommitted=uncommitted,
         subjects=tuple(subjects(base, head, cwd)),
     )
+
+
+# ── the base of a change, and files at a revision ──────────────────────────────────────
+#
+# A shallow CI clone, or one that never fetched the target branch, does not have the base
+# commit. resolve_base tries to fetch it once; when that fails it raises UnknownBaseError, a
+# GitError, so a caller that does nothing still stops with exit status 2, and a caller that
+# catches it can run everything instead. Either way the answer is never a smaller diff.
+
+FETCH_TIMEOUT = 300  # seconds for the one fetch attempt
+
+
+class UnknownBaseError(GitError):
+    """The base commit is not in this clone and could not be fetched."""
+
+
+def is_shallow(cwd: Path | None = None) -> bool:
+    return _git("rev-parse", "--is-shallow-repository", cwd=cwd).strip() == "true"
+
+
+def _has_origin(cwd: Path | None = None) -> bool:
+    remotes = _try("remote", cwd=cwd) or ""
+    return "origin" in remotes.splitlines()
+
+
+def _fetch_base(base: str, shallow: bool, cwd: Path | None = None) -> None:
+    args = ["fetch", "--no-tags", "--quiet"]
+    if shallow:
+        args.append("--unshallow")
+    _git(
+        *args,
+        "origin",
+        base,
+        cwd=cwd,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        timeout=FETCH_TIMEOUT,
+    )
+
+
+def _try_merge_base(base: str, head: str, cwd: Path | None = None) -> str | None:
+    if base.startswith("-") or not _ref_exists(base, cwd):
+        return None
+    return _try("merge-base", base, head, cwd=cwd)
+
+
+def resolve_base(base: str, head: str = "HEAD", cwd: Path | None = None) -> str:
+    """The merge base of base and head, fetching base from origin once if it is missing.
+
+    Raises UnknownBaseError when base, or the history joining it to head, is not in this
+    clone and one fetch from origin did not bring it. Nothing is fetched without an origin
+    remote, or for a base that starts with "-" (it would be read as an option). A head that
+    is not a commit is a plain GitError, raised before any fetch: a typo must stop the run,
+    not turn into "run everything".
+    """
+    if head.startswith("-") or not _ref_exists(head, cwd):
+        raise GitError(f"--head {head!r} is not a commit")
+    found = _try_merge_base(base, head, cwd)
+    if found:
+        return found
+    shallow = _try("rev-parse", "--is-shallow-repository", cwd=cwd) == "true"
+    cause: GitError | None = None
+    if not base.startswith("-") and _has_origin(cwd):
+        try:
+            _fetch_base(base, shallow, cwd)
+        except GitError as exc:
+            cause = exc
+        found = _try_merge_base(base, head, cwd)
+        if found:
+            return found
+    where = "shallow clone" if shallow else "clone"
+    raise UnknownBaseError(
+        f"base {base} is not in this {where} and could not be fetched"
+    ) from cause
+
+
+def show_file(rev: str, path: str, cwd: Path | None = None) -> str | None:
+    """The text of path at rev, or None when path does not exist there.
+
+    path is relative to the repository root, whatever cwd is. Raises GitError when rev is
+    not a commit or the file is not UTF-8 text, so a caller can tell "no such file" from
+    "cannot read it".
+    """
+    if rev.startswith("-") or not _ref_exists(rev, cwd):
+        raise GitError(f"{rev!r} is not a commit")
+    spec = f"{rev}:{path}"
+    if _try("cat-file", "-t", spec, cwd=cwd) != "blob":
+        return None
+    try:
+        return _git_bytes("cat-file", "blob", spec, cwd=cwd).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise GitError(f"{spec} is not UTF-8 text") from exc

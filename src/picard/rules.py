@@ -9,7 +9,8 @@ Resolution:
   2. The results of all files are merged (union).
   3. `full` absorbs everything.
   4. A file no rule matches goes to the code graph, as before. When `[rules_policy] unmapped`
-     is "full" and the file is not in any package, docs or a global file either, it runs
+     is "full" and the file is not in any package, docs, a global file or a `[lockfiles] narrow`
+     glob either, it runs
      everything (fail-safe), because nobody said what it means.
   5. A file a rule matches reaches the code graph only if the rule says `package` or `own`,
      so a YAML-only change does not run the unit suites.
@@ -101,6 +102,7 @@ def resolve(cfg: Config, files: list[str]) -> Resolution:
                 graph.owner(cfg, path)
                 or matches(path, cfg.docs_globs)
                 or matches(path, cfg.global_globs)
+                or matches(path, cfg.narrow_lockfiles)  # attributed to packages, or everything
             ):
                 res.unmapped.append(path)
             continue

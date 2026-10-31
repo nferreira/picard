@@ -70,11 +70,14 @@ def render_why(impact: Impact) -> list[str]:
     def by(name: str) -> str:
         return f" (via {impact.decided_by[name]})" if name in impact.decided_by else ""
 
-    return [
-        f"{name} is affected through {impact.chain(name)}{by(name)}"
-        for name in impact.affected
-        if name not in impact.changed
-    ] + [f"{name} owns a changed file{by(name)}" for name in impact.changed]
+    def reached(name: str) -> str:
+        if impact.decided_by.get(name) == "always":
+            return f"{name} is always affected (always = true)"
+        return f"{name} is affected through {impact.chain(name)}{by(name)}"
+
+    return [reached(name) for name in impact.affected if name not in impact.changed] + [
+        f"{name} owns a changed file{by(name)}" for name in impact.changed
+    ]
 
 
 def render_mermaid(cfg: Config, impact: Impact | None = None) -> str:

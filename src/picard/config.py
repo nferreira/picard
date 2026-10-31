@@ -25,6 +25,12 @@ UNMAPPED_POLICIES = ("ignore", "warn", "full")
 PLACEHOLDERS = ("package", "path", "markers")
 SAFE_VALUE = re.compile(r"^[A-Za-z0-9._-]+$")  # captured names and ids end up in commands
 PACKAGE_SELECTORS = ("affected", "baseline", "all")
+UNKNOWN_BASE_MODES = ("full", "fail")
+# Lockfiles picard can attribute to packages. Only the names live here, so loading a config
+# never needs the parsers.
+NARROWABLE_LOCKFILES = ("Cargo.lock", "package-lock.json", "uv.lock")
+MAX_SHARDS = 256  # GitHub's matrix limit: one tier cannot run more jobs than this
+MAX_LABEL = 50  # GitHub's label name limit
 
 # Extras are named jobs the reusable workflows know how to run.
 KNOWN_EXTRAS = frozenset(
@@ -88,6 +94,9 @@ class Package:
     commands: dict[str, str]
     provider: str = "manual"
     executor: str | None = None  # builds commands the package does not spell out
+    always: bool = False  # in the affected set of every tier that compares against a diff
+    shards: int = 1  # a shardable suite runs as this many matrix jobs
+    test_paths: tuple[str, ...] = ()  # globs, relative to `path`, that only hold tests
 
 
 @dataclass(frozen=True)
@@ -105,6 +114,7 @@ class Tier:
     markers: str
     run: tuple[str, ...]
     extras: tuple[str, ...]
+    selection: bool = False  # executors may select the tests changed since the base commit
 
 
 @dataclass(frozen=True)
@@ -182,6 +192,9 @@ class Config:
     unmapped: str = "ignore"
     impact: ImpactSettings = ImpactSettings()
     executor_options: dict[str, dict[str, Any]] = field(default_factory=dict)
+    git_unknown_base: str = "full"  # what --base does when the base commit cannot be found
+    full_label: str = "ci:full"  # a PR label that forces a full run; "" disables it
+    narrow_lockfiles: tuple[str, ...] = ()  # lockfile globs attributed to packages, not global
     registries: Registries = field(default_factory=Registries, compare=False)
     root: Path | None = field(default=None, compare=False)
     source: Path | None = field(default=None, compare=False)
@@ -343,6 +356,11 @@ def parse(raw: dict[str, Any], source: Path | None = None, root: Path | None = N
         if not re.fullmatch(r"[\w\s()]*", markers):
             # Markers are substituted into shell commands, so only a boolean expression of words.
             raise ConfigError(f"[tiers.{n}] markers may only contain words, spaces and parentheses")
+        selection = body.get("selection", False)
+        if not isinstance(selection, bool):
+            raise ConfigError(f"[tiers.{n}] selection must be true or false")
+        if selection and compare == "none":
+            raise ConfigError(f"[tiers.{n}] selection needs a diff, but compare is 'none'")
         tiers[n] = Tier(
             number=n,
             name=body.get("name", f"tier-{n}"),
@@ -351,6 +369,7 @@ def parse(raw: dict[str, Any], source: Path | None = None, root: Path | None = N
             markers=markers,
             run=_tuple(body.get("run", []), f"[tiers.{n}] run"),
             extras=_extras(body.get("extras", []), f"[tiers.{n}] extras"),
+            selection=selection,
         )
     if not tiers:
         raise ConfigError("define at least one [tiers.<n>]")
@@ -380,7 +399,7 @@ def parse(raw: dict[str, Any], source: Path | None = None, root: Path | None = N
             str(UnknownPluginError("impact engine", engine, registries.engines.names()))
         )
 
-    executor_options = {k: dict(v) for k, v in _table(raw, "executors").items()}
+    executor_options = _executor_options(raw, registries)
     for package in packages.values():
         if package.executor and package.executor not in registries.executors:
             raise ConfigError(
@@ -415,10 +434,80 @@ def parse(raw: dict[str, Any], source: Path | None = None, root: Path | None = N
         unmapped=policy,
         impact=ImpactSettings(engine=engine, options=impact_table),
         executor_options=executor_options,
+        git_unknown_base=_unknown_base(raw),
+        full_label=_full_label(raw),
+        narrow_lockfiles=_narrow_lockfiles(raw),
         registries=registries,
         root=root,
         source=source,
     )
+
+
+def _unknown_base(raw: dict[str, Any]) -> str:
+    value = _table(raw, "git").get("unknown_base", "full")
+    if value not in UNKNOWN_BASE_MODES:
+        raise ConfigError(f"[git] unknown_base must be one of {', '.join(UNKNOWN_BASE_MODES)}")
+    return value
+
+
+def _full_label(raw: dict[str, Any]) -> str:
+    value = _table(raw, "labels").get("full", "ci:full")
+    if not isinstance(value, str) or "," in value or len(value) > MAX_LABEL:
+        # Labels can arrive as a comma-separated list, so a name with a comma could never match.
+        raise ConfigError(
+            f"[labels] full must be a label name: no commas, at most {MAX_LABEL} characters"
+        )
+    return value.strip()
+
+
+def _narrow_lockfiles(raw: dict[str, Any]) -> tuple[str, ...]:
+    globs = _tuple(_table(raw, "lockfiles").get("narrow", []), "[lockfiles] narrow")
+    for glob in globs:
+        segment = glob.rsplit("/", 1)[-1]
+        if segment not in NARROWABLE_LOCKFILES:
+            raise ConfigError(
+                f"[lockfiles] narrow: picard cannot parse '{segment}'; "
+                f"it can narrow {', '.join(NARROWABLE_LOCKFILES)}"
+            )
+    return globs
+
+
+def _executor_options(raw: dict[str, Any], registries: Registries) -> dict[str, dict[str, Any]]:
+    """[executors.<name>] tables. Building each executor once validates its options here."""
+    options: dict[str, dict[str, Any]] = {}
+    for name, body in _table(raw, "executors").items():
+        if not isinstance(body, dict):
+            raise ConfigError(f"[executors.{name}] must be a table")
+        if name not in registries.executors:
+            raise ConfigError(
+                f"[executors.{name}] "
+                + str(UnknownPluginError("executor", name, registries.executors.names()))
+            )
+        try:
+            registries.executors.get(name)(dict(body))
+        except ValueError as exc:
+            raise ConfigError(f"[executors.{name}] {exc}") from exc
+        options[name] = dict(body)
+    return options
+
+
+def _test_paths(value: Any, where: str, quoted: str) -> tuple[str, ...]:
+    globs = _tuple(value, f"{where} test_paths")
+    if any(re.search(r"\{[^}]*\}", glob) for glob in globs):
+        raise ConfigError(f"{quoted} test_paths: captures like {{name}} are not allowed")
+    return globs
+
+
+def _always(value: Any, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"package '{name}': always must be true or false")
+    return value
+
+
+def _shards(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_SHARDS:
+        raise ConfigError(f"package '{name}': shards must be an integer from 1 to {MAX_SHARDS}")
+    return value
 
 
 def _rules(
@@ -516,7 +605,9 @@ def _packages(raw: dict[str, Any], root: Path | None, registries: Registries) ->
                 + str(UnknownPluginError("executor", executor, registries.executors.names()))
             )
         # Everything in the block that is not a known key is an option of the provider.
-        options = {k: v for k, v in block.items() if k not in ("provider", "commands", "executor")}
+        own_keys = ("provider", "commands", "executor", "test_paths")
+        options = {k: v for k, v in block.items() if k not in own_keys}
+        test_paths = _test_paths(block.get("test_paths", []), "[[discover]]", "[[discover]]")
         try:
             found = graph.discover(provider, root, options=options, registries=registries)
         except graph.DiscoveryError as exc:
@@ -533,6 +624,7 @@ def _packages(raw: dict[str, Any], root: Path | None, registries: Registries) ->
                 commands=dict(commands),
                 provider=item.provider,
                 executor=executor,
+                test_paths=test_paths,
             )
 
     for p in raw.get("packages", []):
@@ -548,6 +640,11 @@ def _packages(raw: dict[str, Any], root: Path | None, registries: Registries) ->
                 baseline=bool(p.get("baseline", False)),
                 commands=extra_commands,
                 executor=p.get("executor"),
+                always=_always(p.get("always", False), name),
+                shards=_shards(p.get("shards", 1), name),
+                test_paths=_test_paths(
+                    p.get("test_paths", []), f"package {name}", f"package '{name}'"
+                ),
             )
         else:
             packages[name] = Package(
@@ -558,6 +655,13 @@ def _packages(raw: dict[str, Any], root: Path | None, registries: Registries) ->
                 commands={**base.commands, **extra_commands},
                 provider=base.provider,
                 executor=p.get("executor", base.executor),
+                always=_always(p.get("always", base.always), name),
+                shards=_shards(p.get("shards", base.shards), name),
+                test_paths=(
+                    _test_paths(p["test_paths"], f"package {name}", f"package '{name}'")
+                    if "test_paths" in p
+                    else base.test_paths
+                ),
             )
     return packages
 

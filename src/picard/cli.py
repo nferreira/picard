@@ -20,6 +20,7 @@ Where the changed files come from (first match wins):
 
 PR titles and bodies are read from PICARD_TITLE / PICARD_BODY when not given as
 arguments, so workflows can pass untrusted text through `env:` and never through a shell.
+PR labels likewise come from --label or PICARD_LABELS (a JSON array, or a comma-separated list).
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from picard import __version__, gitutil, graph
@@ -84,6 +85,12 @@ def _add_change_args(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument("--title", action="append", help="PR title or commit subject (repeatable)")
     p.add_argument("--body", help="PR body, scanned for a BREAKING CHANGE footer")
+    p.add_argument(
+        "--label",
+        action="append",
+        metavar="NAME",
+        help="a PR label (repeatable); [labels] full forces a full run. Default: PICARD_LABELS",
+    )
 
 
 def _add_color(p: argparse.ArgumentParser) -> None:
@@ -181,6 +188,20 @@ def _titles_and_body(args: argparse.Namespace) -> tuple[list[str], str]:
     return titles, body
 
 
+def _labels(args: argparse.Namespace) -> list[str]:
+    """--label, else PICARD_LABELS: a JSON array of names, or a comma-separated list."""
+    if args.label:
+        return list(args.label)
+    raw = _env("LABELS")
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        value = None
+    if isinstance(value, list) and all(isinstance(v, str) for v in value):
+        return value
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
 def _read_file_list(source: str) -> list[str]:
     raw = sys.stdin.buffer.read() if source == "-" else Path(source).read_bytes()
     text = raw.decode("utf-8", errors="surrogateescape")
@@ -214,6 +235,9 @@ class Change:
     body: str
     paths_only: bool  # no title: the plan follows the paths alone
     source: str  # human description of where the files came from
+    revisions: graph.Revisions | None = None  # the commits, for --base and --local only
+    labels: list[str] = field(default_factory=list)
+    full_reasons: list[str] = field(default_factory=list)  # why everything must run anyway
 
 
 def _change(args: argparse.Namespace, need_diff: bool) -> Change:
@@ -224,6 +248,7 @@ def _change(args: argparse.Namespace, need_diff: bool) -> Change:
     the files demand and a title can only raise it.
     """
     titles, body = _titles_and_body(args)
+    labels = _labels(args)
     files = _explicit_files(args)
     if files is not None:
         if args.files:
@@ -232,35 +257,56 @@ def _change(args: argparse.Namespace, need_diff: bool) -> Change:
             source = f"file list from {'stdin' if args.files_from == '-' else args.files_from}"
         else:
             source = "the git index" if args.staged else "uncommitted work"
-        return Change(files, titles, body, not titles, source)
+        return Change(files, titles, body, not titles, source, labels=labels)
     if not need_diff:
-        return Change([], titles, body, False, "")
+        return Change([], titles, body, False, "", labels=labels)
     if args.local:
         diff = gitutil.local_diff(args.against, args.head, include_working=not args.no_working)
         titles = titles or list(diff.subjects)
         label = gitutil.current_branch() or "HEAD"
-        return Change(diff.files, titles, body, not titles, diff.describe(label))
+        revisions = graph.Revisions(diff.base_sha, args.head, diff.uncommitted)
+        return Change(diff.files, titles, body, not titles, diff.describe(label), revisions, labels)
     if args.base:
         source = f"{args.base}...{args.head}"
-        return Change(gitutil.changed_files(args.base, args.head), titles, body, False, source)
+        files = gitutil.changed_files(args.base, args.head)
+        revisions = graph.Revisions(gitutil.merge_base(args.base, args.head), args.head)
+        return Change(files, titles, body, False, source, revisions, labels)
     raise cfgmod.ConfigError(
         "pass what changed: --files a b c, --staged, --working, --base REF or --local"
     )
 
 
-def _resolve(args: argparse.Namespace, cfg: cfgmod.Config) -> dict:
-    tier = cfg.tiers.get(args.tier)
-    if tier is None:
-        raise cfgmod.ConfigError(f"tier {args.tier} is not defined in {args.config}")
-    change = _change(args, need_diff=tier.compare != "none")
+def _plan(cfg: cfgmod.Config, tier: int, change: Change, *, expand_shards: bool = True) -> dict:
     return build_plan(
         cfg,
-        args.tier,
+        tier,
         titles=change.titles,
         body=change.body,
         changed_files=change.files,
         paths_only=change.paths_only,
+        revisions=change.revisions,
+        labels=change.labels,
+        full_reasons=change.full_reasons,
+        expand_shards=expand_shards,
     )
+
+
+def _impact_of(cfg: cfgmod.Config, change: Change) -> graph.Impact:
+    return impact_of(
+        cfg,
+        change.files,
+        revisions=change.revisions,
+        labels=change.labels,
+        full_reasons=change.full_reasons,
+    )
+
+
+def _resolve(args: argparse.Namespace, cfg: cfgmod.Config, *, expand_shards: bool = True) -> dict:
+    tier = cfg.tiers.get(args.tier)
+    if tier is None:
+        raise cfgmod.ConfigError(f"tier {args.tier} is not defined in {args.config}")
+    change = _change(args, need_diff=tier.compare != "none")
+    return _plan(cfg, args.tier, change, expand_shards=expand_shards)
 
 
 def _use_color(args: argparse.Namespace) -> bool:
@@ -316,7 +362,8 @@ def _execute(plan: dict, *, dry_run: bool) -> int:
 
 def _cmd_run(args: argparse.Namespace) -> int:
     cfg = cfgmod.load(args.config)
-    plan = _resolve(args, cfg)
+    # Shards parallelise CI; a local run runs each suite once, whole.
+    plan = _resolve(args, cfg, expand_shards=False)
     print(render_text(plan), file=sys.stderr)
     return _execute(plan, dry_run=args.dry_run)
 
@@ -394,6 +441,7 @@ def _render_simulation(cfg, change, plans, impact, *, color, commands) -> str:
     out += ["", f"title: {title}", f"verdict: {verdict}"]
     out += ["", "DEPENDENCY GRAPH", graph.render_tree(cfg, impact, color=color), ""]
     why = graph.render_why(impact) or ["no package is affected through the code graph"]
+    why += next((p["forced_full"] for p in plans.values() if p["forced_full"]), [])
     out += ["WHY", *[f"  {line}" for line in why], ""]
     shown = next((p for p in plans.values() if p["rules"] or p["review"] or p["unmapped"]), None)
     if shown:
@@ -426,18 +474,8 @@ def _cmd_simulate(args: argparse.Namespace) -> int:
     cfg = cfgmod.load(args.config)
     tiers = _parse_tiers(args.tiers, cfg)
     change = _simulation_change(args)
-    plans = {
-        n: build_plan(
-            cfg,
-            n,
-            titles=change.titles,
-            body=change.body,
-            changed_files=change.files,
-            paths_only=change.paths_only,
-        )
-        for n in tiers
-    }
-    impact = impact_of(cfg, change.files)
+    plans = {n: _plan(cfg, n, change) for n in tiers}
+    impact = _impact_of(cfg, change)
 
     if args.format == "json":
         data = {"source": change.source, "files": change.files, "titles": change.titles}
@@ -452,7 +490,8 @@ def _cmd_simulate(args: argparse.Namespace) -> int:
         )
     if not args.run:
         return 0
-    for number, plan in plans.items():
+    for number in tiers:
+        plan = _plan(cfg, number, change, expand_shards=False)  # run each suite once, whole
         print(f"\n▶ tier {number} ({plan['name']})", file=sys.stderr)
         code = _execute(plan, dry_run=False)
         if code != 0:
@@ -464,7 +503,7 @@ def _cmd_graph(args: argparse.Namespace) -> int:
     cfg = cfgmod.load(args.config)
     impact = None
     if _has_source(args):
-        impact = impact_of(cfg, _change(args, need_diff=True).files)
+        impact = _impact_of(cfg, _change(args, need_diff=True))
     if args.format == "json":
         data = {
             "packages": {

@@ -17,6 +17,15 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
+class Revisions:
+    """The commits a change lies between, when picard knows them (--base, --local)."""
+
+    base: str  # the merge-base commit (full sha) the diff starts from
+    head: str  # the head the diff ends at, as given (default "HEAD")
+    uncommitted: tuple[str, ...] = ()  # working-tree files that are also in the change (--local)
+
+
+@dataclass(frozen=True)
 class Impact:
     """What a set of changed files touches in the dependency graph."""
 
@@ -25,8 +34,10 @@ class Impact:
     everything: bool  # a global file (lockfile, config) changed
     global_files: tuple[str, ...]
     notes: tuple[str, ...] = ()  # something worth telling the user, e.g. an engine fell back
-    # package -> who put it in: an engine name, "rule" or "global file" (shown as `via ...`)
+    # package -> who put it in: an engine name, "rule", "global file", "lockfile", "always" or
+    # "forced" (shown as `via ...`)
     decided_by: dict[str, str] = field(default_factory=dict)
+    test_only: tuple[str, ...] = ()  # changed packages whose changed files are all test files
 
     def chain(self, package: str) -> str:
         return " -> ".join(self.affected[package])
@@ -42,7 +53,7 @@ def owner(cfg: Config, path: str) -> str | None:
     return max(owners, key=lambda p: len(p.path)).name if owners else None
 
 
-def everything(cfg: Config, why: Iterable[str] = ()) -> Impact:
+def everything(cfg: Config, why: Iterable[str] = (), by: str = "rule") -> Impact:
     """Every package is affected, for a reason that is not a global file (a rule said `full`)."""
     return Impact(
         (),
@@ -50,7 +61,24 @@ def everything(cfg: Config, why: Iterable[str] = ()) -> Impact:
         True,
         tuple(why),
         (),
-        dict.fromkeys(cfg.packages, "rule"),
+        dict.fromkeys(cfg.packages, by),
+    )
+
+
+def merge(cfg: Config, first: Impact, second: Impact) -> Impact:
+    """The union of two answers. `first` keeps its chains and labels where both name a package."""
+    changed = {*first.changed, *second.changed}
+    affected = {**second.affected, **first.affected}
+    decided = {**second.decided_by, **first.decided_by}
+    test_only = {*first.test_only, *second.test_only}
+    return Impact(
+        tuple(n for n in cfg.packages if n in changed),
+        {n: affected[n] for n in cfg.packages if n in affected},
+        first.everything or second.everything,
+        tuple(dict.fromkeys((*first.global_files, *second.global_files))),
+        (*first.notes, *second.notes),
+        {n: decided[n] for n in cfg.packages if n in decided},
+        tuple(n for n in cfg.packages if n in test_only),
     )
 
 
@@ -62,8 +90,14 @@ class ImpactEngine(ABC):
     """Decides which packages a set of changed files affects.
 
     Template method: `impact` applies the policy every engine shares (a global file such as a
-    lockfile affects everything), then asks the subclass to do the engine-specific part in
-    `compute`. An engine never decides what to run, only what is affected.
+    lockfile affects everything, a lockfile listed under `[lockfiles] narrow` is attributed by
+    `lockfile_impact`), then asks the subclass to do the engine-specific part in `compute`. An
+    engine never decides what to run, only what is affected.
+
+    `self.revisions` holds the commits the change lies between while `impact` runs, or None
+    when the change has no git range (`--files`, `--staged`, `--working`). An engine that needs
+    the commits reads it; with None it answers from the files alone or hands over to its
+    fallback and says so in a note. See ADR 0007.
     """
 
     name: ClassVar[str]
@@ -71,6 +105,7 @@ class ImpactEngine(ABC):
     def __init__(self, options: Mapping[str, Any] | None, registries: Registries) -> None:
         self.options: dict[str, Any] = dict(options or {})
         self.registries = registries
+        self.revisions: Revisions | None = None
 
     @property
     def debug(self) -> bool:
@@ -82,17 +117,42 @@ class ImpactEngine(ABC):
         if self.debug:
             print(f"[picard:debug:{self.name}] {message}", file=sys.stderr)
 
-    def impact(self, cfg: Config, files: Sequence[str]) -> Impact:
-        files = list(files)
-        global_files = tuple(f for f in files if matches(f, cfg.global_globs))
+    def impact(
+        self, cfg: Config, files: Sequence[str], revisions: Revisions | None = None
+    ) -> Impact:
+        self.revisions = revisions
+        # A listed lockfile is attributed to packages, even when it also matches [paths] global:
+        # listing it under [lockfiles] narrow is the opt-in.
+        lockfiles = [f for f in files if matches(f, cfg.narrow_lockfiles)]
+        listed = set(lockfiles)
+        rest = [f for f in files if f not in listed]
+        global_files = tuple(f for f in rest if matches(f, cfg.global_globs))
         if global_files:
             decided = dict.fromkeys(cfg.packages, "global file")
-            return Impact((), {n: (n,) for n in cfg.packages}, True, global_files, (), decided)
-        return self.compute(cfg, files)
+            result = Impact((), {n: (n,) for n in cfg.packages}, True, global_files, (), decided)
+        elif rest:
+            result = self.compute(cfg, rest)
+        else:
+            result = Impact((), {}, False, ())
+        if lockfiles:
+            result = merge(cfg, result, self.lockfile_impact(cfg, lockfiles))
+        return result
 
     @abstractmethod
     def compute(self, cfg: Config, files: list[str]) -> Impact:
         """Changed packages plus their dependents, for files that are not global."""
+
+    def lockfile_impact(self, cfg: Config, lockfiles: list[str]) -> Impact:
+        """What the changed `[lockfiles] narrow` files affect.
+
+        Fails closed: until a change can be attributed to packages, every package is affected.
+        """
+        notes = tuple(
+            f"{path} changed and cannot be attributed to packages yet: running everything"
+            for path in lockfiles
+        )
+        decided = dict.fromkeys(cfg.packages, "lockfile")
+        return Impact((), {n: (n,) for n in cfg.packages}, True, tuple(lockfiles), notes, decided)
 
     def problem(self, cfg: Config) -> str | None:
         """What stops this engine from working here (a missing tool), or None when it is ready."""

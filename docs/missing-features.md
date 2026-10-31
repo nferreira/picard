@@ -308,9 +308,9 @@ Verdict: **Adopt**. Effort: S.
 **How it will be used**
 
 ```toml
-# .picard/pipeline.toml           # planned
+# .picard/pipeline.toml           # today
 [labels]
-full = "ci:full"
+full = "ci:full"           # the default; "" disables it
 
 [[packages]]
 name     = "db-migrations"
@@ -319,12 +319,42 @@ always   = true            # in every PR's affected set
 ```
 
 ```sh
-picard plan --tier 1 --base origin/main --label ci:full --format text   # planned, illustrative output:
-#   packages: all 7
-#   reason:   label ci:full forces a full run
+# today, real output (a scratch repo with four packages, a docs-only commit)
+PICARD_TITLE="docs: fix a typo (ABC-1)" picard plan --tier 1 --base main --label ci:full --format text
+# tier 1 (pr-fast-gate)
+#   profile: full   release: none
+#   packages: component-def, some-api, web, db-migrations
+#   markers: unit or integration
+#   impact: everything is affected
+#   impact: label ci:full forces a full run
+#   run: component-def:test: uv run --no-sync pytest packages/component-def -m "unit or integration"
+#   run: some-api:test: uv run --no-sync pytest apps/some-api -m "unit or integration"
+#   run: web:test: pnpm --filter web run test
+#   run: db-migrations:test: make -C db check
+#   extras: secrets
+#   note: type 'docs' -> profile 'docs'
+#   note: label ci:full forces a full run
 
-picard simulate --files README.md --label ci:full                       # planned: preview what the label does
+# today, real output, excerpt with columns narrowed: preview what the label does (tier 2 runs too)
+picard simulate --files README.md --label ci:full --tiers 1,2
+# WHY
+#   everything is affected
+#   label ci:full forces a full run
+#
+# TIERS
+#   tier name          packages          markers               work
+#   1    pr-fast-gate  all 4 packages    unit or integration   4 suite(s)  secrets
+#   2    pr-baseline   all 4 packages    baseline              4 suite(s)  semgrep, dependency-review
+
+# today, real output, excerpt: without the label, the always package still runs
+picard simulate --files apps/web/x.ts --tiers 1
+# WHY
+#   db-migrations is always affected (always = true)
+#   web owns a changed file (via native)
 ```
+
+Labels also come from `PICARD_LABELS` (a JSON array, or a comma-separated list) when no
+`--label` is given, so a workflow passes them through `env:`.
 
 ```yaml
 # in the plan step of pipeline-pr.yml      # planned

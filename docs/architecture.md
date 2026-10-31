@@ -96,12 +96,24 @@ The host holds no picard code. CI installs a pinned picard in `pipeline-setup-pi
   "runtime": { "runs_on": "ubuntu-24.04", "python_version": "3.12",
                "node_version": "", "setup_command": "..." },
   "reasons": ["type 'feat' -> profile 'full'"],
-  "warnings": []
+  "warnings": [],
+  "labels": ["ci:full"],                                 // as given
+  "forced_full": ["label ci:full forces a full run"],    // [] when not forced
+  "revisions": { "base": "<sha>", "head": "HEAD" },      // null without a git range
+  "metrics": { "packages_total": 7, "packages_selected": 3,
+               "suites_total": 12, "suites_selected": 6, "jobs": 9, "selected_pct": 50 }
 }
 ```
 
 Everything a workflow needs is in it. `suites` becomes the job matrix, `extras` a second
 matrix, `runtime` the runner and toolchains, `skip` short-circuits a tier.
+
+A sharded suite appears once per shard, with id `<package>:<suite>#k/N` and the integers
+`shard` and `shards`. In `metrics`, `suites_total` counts the package suites that have a
+command in this tier over every package, `suites_selected` the distinct package suites the plan
+runs (both without shards and rule actions), `jobs` the length of `suites` (shards and rule
+actions included) and `selected_pct` is `suites_selected` over `suites_total`, rounded. The
+schema stays `1`: fields are only ever added.
 
 ## Impact and engines
 
@@ -158,6 +170,10 @@ Providers, engines and executors are looked up by name in registries
   owns the decision layer and the gate, and nothing a build tool already does.
 - **No lock-in.** Pants, Nx or Bazel can be the source of the graph or the engine, and none is
   required. The default needs nothing installed.
+- **Engines see the commits, not just the files.** `impact()` sets `self.revisions` (base,
+  head, uncommitted files) before it calls `compute`, so plugin engines keep their signature.
+  No git range means the engine answers from the files or its fallback. See
+  [ADR 0007](adr/0007-engines-receive-the-change-revisions.md).
 - **Fail closed.** An unparseable title, a file that matches no rule, or a job that should have
   run and did not all end in a stricter run or a failed gate, never a silent pass.
 - **One required check per event.** `pipeline-gate` and `merge-gate` absorb skips safely.
