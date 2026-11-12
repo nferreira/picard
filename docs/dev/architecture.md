@@ -79,36 +79,9 @@ The host holds no picard code. CI installs a pinned picard in `pipeline-setup-pi
 
 ## The plan
 
-```jsonc
-{
-  "schema": 1,
-  "tier": 1, "name": "pr-fast-gate", "compare": "pr-base",
-  "skip": false, "skip_reason": null,
-  "profile": "full",           // docs | light | infra | deps | full (config-defined)
-  "release": "minor",          // none | patch | minor | major
-  "commits": [{ "title": "...", "valid": true, "type": "feat", "scope": "api",
-                "breaking": false, "ticket": "ABC-1", "errors": [] }],
-  "changed_files": ["apps/api/x.py"],
-  "packages": ["api", "worker"],
-  "markers": "unit or integration",
-  "suites": [{ "id": "api:test", "package": "api", "suite": "test",
-               "command": "pytest apps/api -m \"unit or integration\"" }],
-  "extras": ["secrets"],
-  "runtime": { "runs_on": "ubuntu-24.04", "python_version": "3.12",
-               "node_version": "", "setup_command": "..." },
-  "reasons": ["type 'feat' -> profile 'full'"],
-  "warnings": [],
-  "labels": ["ci:full"],                                 // as given
-  "forced_full": ["label ci:full forces a full run"],    // [] when not forced
-  "revisions": { "base": "<sha>", "head": "HEAD" },      // null without a git range
-  "metrics": { "packages_total": 7, "packages_selected": 3,
-               "suites_total": 12, "suites_selected": 6, "jobs": 9, "selected_pct": 50 }
-  // also: changed_files_total, rules, review, unmapped and impact (changed, affected, why)
-}
-```
-
-Everything a workflow needs is in it. `suites` becomes the job matrix, `extras` a second
-matrix, `runtime` the runner and toolchains, `skip` short-circuits a tier.
+The planner is a pure function from (config, tier, titles, body, changed files) to a plan: one
+JSON document that carries everything a workflow needs. Its fields are in
+[reference/plan.md](../reference/plan.md).
 
 A sharded suite appears once per shard, with id `<package>:<suite>#k/N` and the integers
 `shard` and `shards`. In `metrics`, `suites_total` counts the package suites that have a
@@ -222,7 +195,7 @@ Providers, engines and executors are looked up by name in registries
 
 - Package-level granularity: a change inside a package runs that package's whole suite for the
   tier, unless the tier opts in to test selection (`selection = true`), which passes the test
-  runner's own flag. Coverage-based test impact analysis is on the [roadmap](improvements.md).
+  runner's own flag. Coverage-based test impact analysis is on the [roadmap](roadmap.md).
 - `{markers}` is a pytest-style expression. Other runners map it in the command or ignore it.
 - The graph is as precise as the dependencies a package declares. Edges that live in no
   manifest are added with `depends_on` or a `[[path_rules]]` entry.

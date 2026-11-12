@@ -10,7 +10,7 @@ is skipped.
 | **Affected-based** | Work is chosen from the dependency graph: the packages that own a changed file, plus everything that depends on them, transitively. |
 | **Change-based execution** | The change itself decides what runs: the Conventional Commit PR title (how much to verify), the changed paths (where) and `[[rules]]` (files with no code). |
 | **Incremental** | The cost of a PR follows the size of the change, not the size of the repository. |
-| **Multitier** | Six tiers, from a local pre-push hook to a release. Each has its own scope, test selection and cost budget (see [tiers](tiers.md)). |
+| **Multitier** | Six tiers, from a local pre-push hook to a release. Each has its own scope, test selection and cost budget (see [tiers](../reference/tiers.md)). |
 
 ## How a decision is made
 
@@ -21,15 +21,15 @@ change ──▶ classify ──▶ impact ──▶ plan ──▶ execute
 
 1. **Read the change.** Paths come from `--files`, the git index, the working tree, the merge
    base of the branch (`--local`) or the PR base commit (`--base`). The title comes from the PR.
-   See [simulation](simulation.md).
+   See [simulation](../reference/simulation.md).
 2. **Classify it.** The title's type picks a profile (`full`, `infra`, `deps`, `light`, `docs`)
    and a release effect. Paths can raise the profile and never lower it
-   ([conventional commits](conventional-commits.md)).
+   ([conventional commits](../reference/conventional-commits.md)).
 3. **Compute the impact.** A graph provider reads each ecosystem's own manifests to list the
    packages and the edges between them. An impact engine maps each changed file to its owning
    package and walks the dependents ([architecture](architecture.md#impact-and-engines)).
    `[[rules]]` cover files the graph cannot see: datasets, schemas, migrations, configs
-   ([configuration](configuration.md#rules-actions-inventory-rules_policy)).
+   ([configuration](../reference/configuration.md#rules-actions-inventory-rules_policy)).
 4. **Build the plan.** One JSON document per tier says which suites, markers and extras run.
    Workflows and the local CLI read the same plan, so a green local run predicts a green PR.
 5. **Execute.** Suites run as a matrix, and one gate job turns the run into a single required

@@ -3,7 +3,7 @@
 # Workflows never decide what to run. They ask `picard` for a plan and execute it, so
 # changing behaviour means editing this file, not YAML. After an edit run, from the repo root:
 #   picard validate-config
-# Reference: docs/configuration.md in the picard repository
+# Reference: docs/reference/configuration.md in the picard repository
 
 # ── Runtime: where and how suites run in CI ─────────────────────────────────────────────
 # Empty python_version / node_version skip the setup step. setup_command runs before every

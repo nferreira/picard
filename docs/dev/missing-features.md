@@ -112,7 +112,7 @@ Verdict: **Integrate**. Effort: S for Nx, then M once for the rest. Built.
    answers instead and the plan carries a note, so `picard simulate --files` and CI can differ for
    a package, and `--debug` shows exactly where.
 
-The details are in [configuration](configuration.md#impact).
+The details are in [configuration](../reference/configuration.md#impact).
 
 **How it will be used**
 
@@ -238,7 +238,7 @@ Verdict: **Integrate**. Effort: M. Built, except balancing by timings.
   Vitest repo writes a `test` command with a `{shard}` placeholder, because Vitest's flags were
   not verified.
 - Shards split by the splitter's default. Balancing by recorded duration, from the nightly
-  run's timing file, is not built and stays on the [roadmap](improvements.md).
+  run's timing file, is not built and stays on the [roadmap](roadmap.md).
 - A local `picard run` runs the whole suite once, because shards exist to parallelise CI.
 
 **How it will be used**
@@ -302,7 +302,7 @@ picard affected --files README.md --format matrix   # today, real: nothing affec
 
 Names and paths come in config order, one per line, and print nothing when the set is empty.
 `--format json` is versioned (`schema` 1) and adds the provider, `decided_by` and the chain of
-each package; see [simulation](simulation.md#listing-what-is-affected).
+each package; see [simulation](../reference/simulation.md#listing-what-is-affected).
 
 Build and deploy only what changed:
 
@@ -796,7 +796,7 @@ Verdict: **Skip**, delegate through item 8. Effort: L if built, none if delegate
 
 picard will not store task results. When a package runs through a tool executor, that tool's
 cache applies, local and remote. Plain dependency caching (uv, pnpm, buildx) is a one-place
-addition to the run-suite action, and is already on the [roadmap](improvements.md).
+addition to the run-suite action, and is already on the [roadmap](roadmap.md).
 
 **How it will be used**
 

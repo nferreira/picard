@@ -12,6 +12,7 @@
 
 Where the changed files come from (first match wins):
   --files a b,c   simulate: exactly these paths, no git needed
+  --pr [N ...]    merged pull request(s): pick from a list, or name them (needs gh)
   --files-from F  the same, read from a file or stdin (NUL or newline separated)
   --staged        what is in the index
   --working       every uncommitted change, staged or not, plus untracked files
@@ -37,10 +38,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from picard import __version__, gitutil, graph, report
+from picard import __version__, gitutil, graph, prs, report
 from picard import commits as cc
 from picard import config as cfgmod
-from picard import pr as prmod
 from picard.graph.impact import SetupError
 from picard.planner import build_plan, impact_of, render_markdown, render_text
 from picard.scaffold import ScaffoldError
@@ -61,6 +61,13 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _pr_number(value: str) -> int:
+    try:
+        return int(value.lstrip("#"))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a pull request number: {value!r}") from None
+
+
 def _add_change_args(p: argparse.ArgumentParser) -> None:
     _add_common(p)
     p.add_argument("--files", nargs="+", metavar="PATH", help="simulate a change to these paths")
@@ -69,6 +76,22 @@ def _add_change_args(p: argparse.ArgumentParser) -> None:
         metavar="FILE",
         help="like --files, read from FILE or '-' (stdin), NUL or newline separated: "
         "for thousands of paths, which must never go through the command line",
+    )
+    p.add_argument(
+        "--pr",
+        nargs="*",
+        type=_pr_number,
+        metavar="NUMBER",
+        help="plan pull request(s), merged, closed or open, as CI would: their files, title, body "
+        "and labels; with no number, pick from a list of recent ones (needs the GitHub CLI, gh). "
+        "--title and --body replace theirs, --label adds to theirs",
+    )
+    p.add_argument(
+        "--pr-limit",
+        type=int,
+        default=30,
+        metavar="N",
+        help="with --pr: how many recent pull requests to list (default: %(default)s)",
     )
     p.add_argument("--staged", action="store_true", help="changed files = the git index")
     p.add_argument("--working", action="store_true", help="changed files = all uncommitted work")
@@ -129,16 +152,6 @@ def _parser() -> argparse.ArgumentParser:
     sim = sub.add_parser("simulate", help="show what every tier would do for a change")
     _add_change_args(sim)
     _add_color(sim)
-    sim.add_argument(
-        "--pr",
-        nargs="?",
-        const="",
-        metavar="N",
-        help="simulate a GitHub pull request as CI would plan it: its title, body, labels and "
-        "commits, read with `gh`. Give a number or URL, or no value to list recent pull "
-        "requests, open, merged and closed, and choose one. --title and --body replace the pull request's, --label adds "
-        "to its labels",
-    )
     sim.add_argument("--tiers", default="0,1,2,3,4", help="comma separated, default: all")
     sim.add_argument("--commands", action="store_true", help="also print every command")
     sim.add_argument("--run", action="store_true", help="execute the selected tiers in order")
@@ -242,7 +255,13 @@ def _read_file_list(source: str) -> list[str]:
 
 def _has_source(args: argparse.Namespace) -> bool:
     return bool(
-        args.files or args.files_from or args.staged or args.working or args.base or args.local
+        args.files
+        or args.files_from
+        or args.pr is not None
+        or args.staged
+        or args.working
+        or args.base
+        or args.local
     )
 
 
@@ -271,6 +290,53 @@ class Change:
     full_reasons: list[str] = field(default_factory=list)  # why everything must run anyway
 
 
+_PR_EXCLUDES = ("files", "files_from", "staged", "working", "base", "local")
+
+
+def _local_revisions(change: prs.PrChange) -> graph.Revisions | None:
+    """A pull request's commits as a git range, only when they reproduce the platform's file list.
+
+    The range is what lets a lockfile change be narrowed. A head that is not in the clone is
+    fetched from origin once. Anything that does not add up (a missing commit, a rename, another
+    file list) gives no range, so the lockfile is global again and more runs, never less.
+    """
+    if not (change.base_sha and change.head_sha):
+        return None
+    try:
+        if not gitutil.has_commit(change.head_sha) and not gitutil.fetch_pull_head(change.number):
+            return None
+        base = gitutil.resolve_base(change.base_sha, change.head_sha)
+        local = set(gitutil.changed_files(base, change.head_sha))
+    except gitutil.GitError:
+        return None
+    return graph.Revisions(base, change.head_sha) if local == set(change.files) else None
+
+
+def _pr_change(args: argparse.Namespace, titles: list[str], body: str, labels: list[str]) -> Change:
+    """Pull requests planned as CI would: their files, titles, bodies and labels.
+
+    Several pull requests are planned together (the union of their files). One of them also
+    carries its commits, so a lockfile change in it can be narrowed. An explicit --title or
+    --body replaces theirs and --label adds to theirs, as for every other source.
+    """
+    given = [f"--{name.replace('_', '-')}" for name in _PR_EXCLUDES if getattr(args, name)]
+    if given:
+        raise cfgmod.ConfigError(f"--pr reads what changed from the pull request: drop {given[0]}")
+    numbers = list(dict.fromkeys(args.pr)) or prs.choose(
+        args.pr_limit, current_branch=gitutil.current_branch()
+    )
+    changes = [prs.fetch(n) for n in numbers]
+    files = list(dict.fromkeys(f for c in changes for f in c.files))
+    pr_titles = titles or [c.title for c in changes]
+    pr_body = body or "\n\n".join(c.body for c in changes if c.body)
+    pr_labels = list(dict.fromkeys([*(name for c in changes for name in c.labels), *labels]))
+    states = {c.state.lower() for c in changes if c.state}
+    kind = f"{next(iter(states))} " if len(states) == 1 else ""
+    source = f"{kind}PR " + ", ".join(f"#{c.number}" for c in changes)
+    revisions = _local_revisions(changes[0]) if len(changes) == 1 else None
+    return Change(files, pr_titles, pr_body, False, source, revisions, pr_labels)
+
+
 def _change(args: argparse.Namespace, cfg: cfgmod.Config, need_diff: bool) -> Change:
     """The change described by the arguments.
 
@@ -280,6 +346,8 @@ def _change(args: argparse.Namespace, cfg: cfgmod.Config, need_diff: bool) -> Ch
     """
     titles, body = _titles_and_body(args)
     labels = _labels(args)
+    if args.pr is not None:
+        return _pr_change(args, titles, body, labels)
     files = _explicit_files(args)
     if files is not None:
         if args.files:
@@ -434,82 +502,8 @@ def _parse_tiers(value: str, cfg: cfgmod.Config) -> list[int]:
     return tiers
 
 
-_PR_CONFLICTS = ("files", "files_from", "staged", "working", "base", "local")
-
-
-def _choose_pull_request() -> str:
-    """`--pr` without a value: list recent pull requests (any state) and let the person pick."""
-    try:
-        items = prmod.list_recent()
-    except prmod.PullRequestError as exc:
-        raise cfgmod.ConfigError(str(exc)) from exc
-    if not items:
-        raise cfgmod.ConfigError("there are no pull requests to choose from")
-    branch = gitutil.current_branch()
-    if not prmod.interactive():
-        for line in prmod.render_choices(items, branch):
-            print(line, file=sys.stderr)
-        raise cfgmod.ConfigError(
-            "--pr needs a pull request number when there is no terminal to choose from, "
-            f"for example: picard simulate --pr {items[0].number}"
-        )
-    try:
-        return str(prmod.choose(items, branch))
-    except prmod.PullRequestError as exc:
-        raise cfgmod.ConfigError(str(exc)) from exc
-
-
-def _pr_change(args: argparse.Namespace, cfg: cfgmod.Config) -> Change:
-    """The change a pull request makes, planned from what CI would see.
-
-    The pull request supplies the title, body and labels and the two commits to diff, then the
-    ordinary `--base` path does the rest (so a base that is not in the clone fails closed in the
-    same way). A head that is not in the clone is fetched from origin once; failing that, the
-    platform's own file list is used, which cannot narrow a lockfile change and so runs more,
-    never less.
-    """
-    given = [f"--{name.replace('_', '-')}" for name in _PR_CONFLICTS if getattr(args, name)]
-    if given:
-        raise cfgmod.ConfigError(f"--pr reads what changed from the pull request: drop {given[0]}")
-    try:
-        found = prmod.fetch(args.pr or _choose_pull_request())
-    except prmod.PullRequestError as exc:
-        raise cfgmod.ConfigError(str(exc)) from exc
-    labels = list(dict.fromkeys([*found.labels, *(args.label or [])]))
-    source = f"PR #{found.number} {found.base_ref}...{found.head_ref} ({found.state.lower()})"
-    titles = list(args.title or []) or [found.title]
-    body = args.body if args.body is not None else found.body
-    if not gitutil.has_commit(found.head_sha) and not gitutil.fetch_pull_head(found.number):
-        print(
-            f"picard: warning: the head of PR #{found.number} is not in this clone and could not "
-            "be fetched; using the file list GitHub gives, so a lockfile change runs everything",
-            file=sys.stderr,
-        )
-        try:
-            files = prmod.changed_paths(found.number)
-        except prmod.PullRequestError as exc:
-            raise cfgmod.ConfigError(str(exc)) from exc
-        return Change(files, titles, body, False, source, None, labels)
-    local = argparse.Namespace(**vars(args))
-    local.title, local.body, local.label = titles, body, labels
-    local.base, local.head = found.base_sha, found.head_sha
-    change = _change(local, cfg, need_diff=True)
-    return Change(
-        change.files,
-        change.titles,
-        change.body,
-        change.paths_only,
-        source,
-        change.revisions,
-        change.labels,
-        change.full_reasons,
-    )
-
-
 def _simulation_change(args: argparse.Namespace, cfg: cfgmod.Config) -> Change:
     """Like _change, but a bare `simulate` (or `affected`) means "the current branch"."""
-    if getattr(args, "pr", None) is not None:
-        return _pr_change(args, cfg)
     if not _has_source(args):
         args.local = True
     return _change(args, cfg, need_diff=True)
@@ -793,7 +787,7 @@ def _cmd_scaffold(args: argparse.Namespace) -> int:
             "picard: next: edit .picard/pipeline.toml and run `picard validate-config`, "
             "run `picard install-hooks`, then set the repository variables PICARD_REPOSITORY "
             "and PICARD_REF and the secret PICARD_TOKEN that the workflows use "
-            "(see docs/adoption.md in the picard repository)"
+            "(see docs/tutorial/07-ci-and-rollout.md in the picard repository)"
         )
     return 0
 
@@ -847,6 +841,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         graph.DiscoveryError,
         SetupError,
         ScaffoldError,
+        prs.PrError,
     ) as exc:
         print(f"picard: {exc}", file=sys.stderr)
         return 2

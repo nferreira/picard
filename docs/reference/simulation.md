@@ -1,6 +1,6 @@
 # Running it locally and simulating changes
 
-picard is an [affected-based](concepts.md) pipeline: what runs is a function of the change. So
+picard is an [affected-based](../dev/concepts.md) pipeline: what runs is a function of the change. So
 you can ask what a change would do before you push it, or without making it at all. Every command runs from the repo root and
 needs nothing installed (`picard`).
 
@@ -15,8 +15,8 @@ needs nothing installed (`picard`).
 | `--local --against upstream` | commits not pushed yet, plus uncommitted work | a pre-push check |
 | `--local --against <ref>` | commits since any ref, plus uncommitted work | comparing with a release branch |
 | `--local --no-working` | committed changes only | what a PR would contain |
-| `--pr [N]` | the pull request's own commits, **with its title, body and labels** (GitHub, read with `gh`); without a number, pick one from a list | "what will CI do for PR N?" |
 | `--base REF` | `git diff REF...HEAD` (a missing base is fetched once, then [`[git] unknown_base`](configuration.md#git) decides) | CI: the PR base commit |
+| `--pr [N ...]` | the files, title, body and labels of pull request(s), merged, closed or open (GitHub, read with `gh`); bare `--pr` lists recent ones to pick from | "what would CI do for that PR?" |
 
 The first match wins. Without `--title`, a change with no commit yet is planned from its paths
 alone: a source file demands `full`, a markdown file demands `docs`, and a title you add can
@@ -26,32 +26,37 @@ only raise that. `--label NAME` (repeatable; `PICARD_LABELS` when absent) adds P
 ### Simulating a pull request
 
 `picard simulate --pr 123` plans a pull request the way CI does. A local run has your commits but
-not the three other inputs CI uses: the PR title (it decides the profile and the release), its body
-(a `BREAKING CHANGE:` footer) and its labels (`ci:full`). `--pr` reads them, and the two commits to
-diff, with the GitHub CLI (`gh`, logged in), then plans every tier as `pipeline-pr` would.
+not the other inputs CI uses: the PR title (it decides the profile and the release), its body (a
+`BREAKING CHANGE:` footer) and its labels (`ci:full`). `--pr` reads them, and the files the pull
+request changed, with the GitHub CLI (`gh`, logged in), then plans every tier as `pipeline-pr` would.
+The pull request can be merged, closed or still open.
 
 ```sh
-picard simulate --pr 123                 # a pull request by number (or URL)
-picard simulate --pr                     # list recent pull requests (open, merged, closed) and pick
+picard simulate --pr 123                 # a pull request by number
+picard simulate --pr 123 124             # several, planned together
+picard simulate --pr                     # list recent pull requests (any state) and pick
 picard simulate --pr 123 --label ci:full # what if it were labelled ci:full
 picard simulate --pr 123 --title 'feat(x): y (ABC-1)'   # what if the title were this
-picard simulate --pr 123 --tiers 1,3 --format json
+picard simulate --pr --pr-limit 100      # list more of them
+picard affected --pr 123                 # the packages it affects; plan, run and graph take it too
 ```
 
-- Without a number, picard lists the 30 most recent pull requests of any state (open, merged or
-  closed, each with its state and branch, the checked-out branch's starred) and asks which one.
-  Enter takes the starred one, `q` quits. The list and the prompt go to stderr, so `--format json`
-  stays clean. With no terminal (CI, a pipe) it prints the list and asks for a number instead of
-  waiting. Older pull requests are reached by number.
+- Without a number, picard lists the 30 most recent pull requests (`--pr-limit` changes that) of any
+  state, newest activity first, each with its day, state, title and branch. The checked-out branch's
+  is starred and Enter takes it. Type one or several numbers (`707 699` or `707,#699`), blank or
+  `q` cancels. A number that is not in the list is refused: raise `--pr-limit`, or name it directly.
+  The list and the prompt go to stderr, so `--format json` stays clean. With no terminal (CI, a
+  closed pipe) it stops and says to name the pull request; `echo 707 | picard simulate --pr` works.
 - `--title` and `--body` **replace** the pull request's. `--label` **adds** to its labels.
 - It cannot be combined with `--files`, `--files-from`, `--staged`, `--working`, `--base` or
   `--local`: the pull request says what changed.
-- The head commit is fetched from origin when it is not in the clone (`pull/<N>/head`). If that
-  fails, the file list GitHub gives is used instead. That list has no commits, so a lockfile change
-  cannot be narrowed and runs everything: more, never less. A base that is not in the clone behaves
-  as it does for `--base` (`[git] unknown_base`).
-- Without `gh`, `--pr` stops and says to install it, or to pass `--title`, `--label` and `--base`
-  yourself. picard itself needs only git; `gh` is used by this option alone.
+- The file list comes from the platform (every page, a rename counts both paths). For one pull
+  request whose commits are in the clone (the head is fetched from `origin` once, as
+  `pull/<N>/head`) picard also uses them as a git range, so a lockfile change can be narrowed, but
+  only when the range gives exactly the platform's file list. Several pull requests, a missing
+  commit or any mismatch give no range, so a lockfile change runs every package: more, never less.
+- Without `gh`, `--pr` stops and says to install it, or to describe the change with `--files`,
+  `--title` and `--label`. picard itself needs only git; `gh` is used by this option alone.
 
 ### Which branch is "the origin branch"
 
@@ -97,6 +102,11 @@ picard simulate --local
 # Simulate a change I have not made
 picard simulate --files packages/abc/src/abc/encoder.py \
     --title "fix(abc): handle empty input (ABC-1)"
+
+# Pick from the recent pull requests and see what CI would have run (needs `gh`)
+picard simulate --pr                 # lists the last 30 of any state, type one or more numbers
+picard simulate --pr 707 699         # name them, no prompt
+picard simulate --pr --pr-limit 100
 
 # Show the commands each tier would run
 picard simulate --local --commands
