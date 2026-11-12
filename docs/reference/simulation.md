@@ -58,6 +58,20 @@ picard affected --pr 123                 # the packages it affects; plan, run an
 - Without `gh`, `--pr` stops and says to install it, or to describe the change with `--files`,
   `--title` and `--label`. picard itself needs only git; `gh` is used by this option alone.
 
+### Several tiers in one go
+
+`picard simulate --tiers 0,1,2` plans and (with `--run`) executes the tiers in order. A command that
+an earlier tier of the same invocation already ran is **not run again**. It is skipped in a real run
+(`== rule:x: skipped, already ran in tier 0`), and in a simulation (`--commands`) or a dry run it is
+shown as one that would be skipped (`skip, already ran in tier 0: <command>`). The tier table counts
+only the new work (`2 suite(s) (1 new)`), and `--format json` adds a `repeats` object that maps each
+later tier to the suites it repeats and the tier that ran them first.
+
+A command counts as a repeat only when its suite id **and** its command line are identical. A test
+command whose markers differ between tiers (`unit`, then `unit or integration`) is different work
+and always runs; picard does not assume that one marker expression contains another. A command that
+failed stops the run before it could be recorded as done.
+
 ### Which branch is "the origin branch"
 
 `--local` needs the branch your branch grew out of. It looks, in order, at:
