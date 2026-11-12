@@ -11,6 +11,7 @@
 
 Where the changed files come from (first match wins):
   --files a b,c   simulate: exactly these paths, no git needed
+  --pr [N ...]    merged pull request(s): pick from a list, or name them (needs gh)
   --files-from F  the same, read from a file or stdin (NUL or newline separated)
   --staged        what is in the index
   --working       every uncommitted change, staged or not, plus untracked files
@@ -33,7 +34,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from picard import __version__, gitutil, graph
+from picard import __version__, gitutil, graph, prs
 from picard import commits as cc
 from picard import config as cfgmod
 from picard.graph.impact import SetupError
@@ -62,6 +63,21 @@ def _add_change_args(p: argparse.ArgumentParser) -> None:
         metavar="FILE",
         help="like --files, read from FILE or '-' (stdin), NUL or newline separated: "
         "for thousands of paths, which must never go through the command line",
+    )
+    p.add_argument(
+        "--pr",
+        nargs="*",
+        type=int,
+        metavar="NUMBER",
+        help="plan merged pull request(s) as if just opened; with no number, pick from a list "
+        "(needs the GitHub CLI, gh)",
+    )
+    p.add_argument(
+        "--pr-limit",
+        type=int,
+        default=30,
+        metavar="N",
+        help="with --pr: how many recently merged PRs to list (default: %(default)s)",
     )
     p.add_argument("--staged", action="store_true", help="changed files = the git index")
     p.add_argument("--working", action="store_true", help="changed files = all uncommitted work")
@@ -190,7 +206,13 @@ def _read_file_list(source: str) -> list[str]:
 
 def _has_source(args: argparse.Namespace) -> bool:
     return bool(
-        args.files or args.files_from or args.staged or args.working or args.base or args.local
+        args.files
+        or args.files_from
+        or args.pr is not None
+        or args.staged
+        or args.working
+        or args.base
+        or args.local
     )
 
 
@@ -216,6 +238,18 @@ class Change:
     source: str  # human description of where the files came from
 
 
+def _pr_change(args: argparse.Namespace, titles: list[str], body: str) -> Change:
+    """Merged PRs planned as if just opened: their files, titles and bodies."""
+    numbers = args.pr or prs.choose(args.pr_limit)
+    changes = [prs.fetch(n) for n in numbers]
+    files = list(dict.fromkeys(f for c in changes for f in c.files))
+    # An explicit --title or --body still wins, as it does for every other source.
+    pr_titles = titles or [c.title for c in changes]
+    pr_body = body or "\n\n".join(c.body for c in changes if c.body)
+    source = "merged PR " + ", ".join(f"#{c.number}" for c in changes)
+    return Change(files, pr_titles, pr_body, False, source)
+
+
 def _change(args: argparse.Namespace, need_diff: bool) -> Change:
     """The change described by the arguments.
 
@@ -224,6 +258,8 @@ def _change(args: argparse.Namespace, need_diff: bool) -> Change:
     the files demand and a title can only raise it.
     """
     titles, body = _titles_and_body(args)
+    if args.pr is not None and not args.files and not args.files_from:
+        return _pr_change(args, titles, body)
     files = _explicit_files(args)
     if files is not None:
         if args.files:
@@ -579,7 +615,7 @@ def _cmd_scaffold(args: argparse.Namespace) -> int:
             "picard: next: edit .picard/pipeline.toml and run `picard validate-config`, "
             "run `picard install-hooks`, then set the repository variables PICARD_REPOSITORY "
             "and PICARD_REF and the secret PICARD_TOKEN that the workflows use "
-            "(see docs/adoption.md in the picard repository)"
+            "(see docs/tutorial/07-ci-and-rollout.md in the picard repository)"
         )
     return 0
 
@@ -632,6 +668,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         graph.DiscoveryError,
         SetupError,
         ScaffoldError,
+        prs.PrError,
     ) as exc:
         print(f"picard: {exc}", file=sys.stderr)
         return 2

@@ -1,6 +1,6 @@
 # Running it locally and simulating changes
 
-picard is an [affected-based](concepts.md) pipeline: what runs is a function of the change. So
+picard is an [affected-based](../dev/concepts.md) pipeline: what runs is a function of the change. So
 you can ask what a change would do before you push it, or without making it at all. Every command runs from the repo root and
 needs nothing installed (`picard`).
 
@@ -16,6 +16,7 @@ needs nothing installed (`picard`).
 | `--local --against <ref>` | commits since any ref, plus uncommitted work | comparing with a release branch |
 | `--local --no-working` | committed changes only | what a PR would contain |
 | `--base REF` | `git diff REF...HEAD` | CI: the PR base commit |
+| `--pr [N ...]` | the files, title and body of merged pull request(s); bare `--pr` lists recent ones to pick from | "what would CI have run for that PR?" |
 
 The first match wins. Without `--title`, a change with no commit yet is planned from its paths
 alone: a source file demands `full`, a markdown file demands `docs`, and a title you add can
@@ -65,6 +66,11 @@ picard simulate --local
 # Simulate a change I have not made
 picard simulate --files packages/abc/src/abc/encoder.py \
     --title "fix(abc): handle empty input (ABC-1)"
+
+# Pick from the recently merged PRs and see what CI would have run (needs `gh`)
+picard simulate --pr                 # lists the last 30, type one or more numbers
+picard simulate --pr 707 699         # name them, no prompt
+picard simulate --pr --pr-limit 100
 
 # Show the commands each tier would run
 picard simulate --local --commands

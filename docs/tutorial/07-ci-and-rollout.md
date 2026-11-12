@@ -1,6 +1,10 @@
-# Adopting the pipeline in a repo
+# 7. CI, hooks and rollout
 
-## 1. Install picard and scaffold the repo
+The earlier steps work on your machine. This one wires GitHub and the git hooks, and rolls the
+pipeline out without blocking anyone. Settings and file lists are in
+[github-integration](../reference/github-integration.md).
+
+## Install picard and scaffold the repo
 
 Install picard once per machine, from a clone of its repository:
 
@@ -20,11 +24,11 @@ picard init
 `.github/release-please/*`, `CODEOWNERS`, `dependabot.yaml` and the PR template. It touches
 nothing else. Review with `git status` and commit.
 
-## 2. Describe your repo in `.picard/pipeline.toml`
+## Describe your repo in `.picard/pipeline.toml`
 
 - `[runtime]`: Python/Node version and the command that installs dependencies.
 - `[[packages]]`: one per unit, with its `lint` and `test` commands. Set `baseline = true` on
-  the packages whose baseline tests must always run. See [configuration](configuration.md).
+  the packages whose baseline tests must always run. See [configuration](../reference/configuration.md).
 - `[paths]`: adjust `docs`, `global` and the floors for your layout.
 - `[breaking] release`: `minor` while below 1.0.
 
@@ -36,29 +40,29 @@ add one `[[discover]]` block per ecosystem (`uv`, `npm`, `cargo`, `go`, or `comm
 anything else) and check that `picard graph` shows the packages and edges you
 expect. The default `native` impact engine needs nothing more. To use Pants for import-level
 precision, set `engine = "pants"` under `[impact]` and run `picard setup`, then
-add `picard setup --check` to CI. See [configuration](configuration.md#impact).
+add `picard setup --check` to CI. See [configuration](../reference/configuration.md#impact).
 
-## 2b. Keep `.picard/templates/` out of your linters
+## Keep `.picard/templates/` out of your linters
 
 `.picard/templates/pytest/conftest.py` is picard's marker plugin, a file you copy into your test
 root and then own. Until you do, exclude the folder from tools that scan dot-folders, for example
 `[tool.ruff] extend-exclude = [".picard/templates"]`. pytest and eslint already skip it.
 
-## 3. Mark your tests
+## Mark your tests
 
 Tiers select tests by marker. Copy `.picard/templates/pytest/conftest.py` (written by `picard init`) to your test root,
 register `unit`, `integration`, `baseline` and `slow` in `pyproject.toml` with
 `--strict-markers`, and mark the must-pass tests `@pytest.mark.baseline`. Turn on
-`PICARD_REQUIRE_MARKERS=1` once the backlog is marked. See [tiers](tiers.md#the-marker-prerequisite).
+`PICARD_REQUIRE_MARKERS=1` once the backlog is marked. See [tiers](../reference/tiers.md#the-marker-prerequisite).
 
-## 4. Fill the placeholders
+## Fill the placeholders
 
 | File | Replace |
 |---|---|
 | `.github/CODEOWNERS` | `@REPLACE_ME` with the real owner |
 | `.github/release-please/config.json` | `release-type` if the repo is not language-agnostic (`python`, `node`, `go`, ...) |
 
-## 5. GitHub settings
+## GitHub settings
 
 - **Install picard in CI:** the workflows install a pinned picard. Set the repository variables
   `PICARD_REPOSITORY` (`owner/name`) and `PICARD_REF` (a tag, or better a full commit SHA) and, when
@@ -74,7 +78,7 @@ register `unit`, `integration`, `baseline` and `slow` in `pyproject.toml` with
 - **Security:** enable the dependency graph (needed by dependency review), secret scanning and
   Dependabot alerts.
 
-## 6. Local hooks
+## Local hooks
 
 ```sh
 picard install-hooks
@@ -83,7 +87,7 @@ picard install-hooks
 The hooks need `picard` on the PATH. When it is missing they say how to install it and exit
 non-zero (bypass once with `--no-verify`).
 
-## 7. Check it works
+## Check it works
 
 Open a PR whose title is `docs: try the pipeline (TICKET-1)` and confirm only the docs
 checks run. Then a `fix:` PR touching code and confirm tiers 1 and 2 run. Merge both,

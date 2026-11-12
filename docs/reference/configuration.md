@@ -1,4 +1,4 @@
-# pipeline.toml reference
+# `pipeline.toml` reference
 
 The file is `.picard/pipeline.toml`. Validate after every edit, from the repo root:
 
@@ -133,7 +133,7 @@ there. Use it for a baseline suite that differs from the default test command.
 ## `[impact]`
 
 Which engine answers "what does this change affect". The graph itself always comes from
-`[[discover]]` and `[[packages]]`. See [architecture](architecture.md#impact-and-engines).
+`[[discover]]` and `[[packages]]`. See [architecture](../dev/architecture.md#impact-and-engines).
 
 ```toml
 [impact]
@@ -242,68 +242,5 @@ packages = ["worker"]      # tier 2 also runs these when the globs match
 
 ## `[[rules]]`, `[actions.*]`, `[inventory.*]`, `[rules_policy]`
 
-The code graph says which packages a code change affects. Configs, schemas, database
-definitions, datasets, baselines, docs and automation have no import graph, so **rules** say
-what must run when those files change. Rules complement the graph; they do not replace it.
-
-```toml
-[rules_policy]
-unmapped = "full"             # ignore | warn | full: a file no rule and no package covers
-
-[inventory.model]             # resolves the captured {model} to an id and a status
-file = "models/inventory.toml"
-entries = "model"             # the [[model]] tables in that file
-runnable = ["trainable"]      # statuses that may run actions using {model}
-
-[actions.train-model]         # a named command; never takes a file list
-run = "python -m train --data models/{model_dir}/data.csv --out build/{model}.json"
-tiers = [2]                   # optional: overrides the rule's tiers for this action
-needs = ["trainable"]         # optional: inventory statuses this action requires
-
-[[rules]]
-name = "model dataset"
-match = ["models/{model}/data/**"]       # {model} captures one path segment
-actions = ["run:test-model", "run:train-model", "require-review"]
-tiers = [0, 1, 2]             # optional, default [0, 1, 2]
-profile = "full"              # optional: the profile these files demand (a docs rule lowers it)
-```
-
-**Resolution**
-
-1. Each changed file uses the **first** rule whose `match` fits, top to bottom.
-2. The results of all files are **merged**; identical actions run once.
-3. A file a rule matches reaches the code graph only if the rule says `package` or `own`, so a
-   dataset or YAML change does not run unit suites.
-4. A file no rule matches goes to the code graph, as before.
-5. `unmapped` decides what happens to a file that no rule, package, docs glob or global glob
-   covers: `full` runs everything (recommended), `warn` only warns, `ignore` does nothing.
-6. `full` absorbs everything.
-
-**Actions**
-
-| Action | Meaning |
-|---|---|
-| `none` | nothing; combine with `profile = "docs"` for documentation |
-| `full` | every package |
-| `package` | the owning package and everything that depends on it (the graph) |
-| `own` | the owning package only |
-| `require-review` | recorded in the plan and shown as `REVIEW REQUIRED` |
-| `run:<name>` | the command of `[actions.<name>]`, with captures filled in, as one suite |
-
-`{markers}` is available in an action's command. `{package}` and `{path}` are not (they belong
-to package commands). A capture `{model}` becomes the inventory id when an inventory with that
-name exists, and `{model_dir}` is always the directory name.
-
-**Safety.** Captured names end up in shell commands and come from paths a PR controls, so they
-must match `[A-Za-z0-9._-]+`. Anything else, a name missing from the inventory, or an
-unreadable inventory runs **everything** and warns, and is never turned into a command. An
-action whose inventory status is not allowed is skipped **with a warning naming the status**.
-
-**Large pull requests.** Rules are matched inside the planner, so no file list goes through a
-command line or an environment variable. The plan lists at most 200 changed files plus the
-total (`changed_files_total`), because one string over 128 KiB fails at process start. Use
-`--files-from FILE` (NUL or newline separated, or `-` for stdin) to simulate thousands of paths.
-
-**`require-review`.** Today it is data: the plan lists it and `simulate` prints it. Blocking a
-merge until a person approves needs a CI decision (a required label, CODEOWNERS or an
-environment approval) that is not made yet.
+Rules say what must run when files with no import graph change. They have their own page:
+[rules.md](rules.md).
