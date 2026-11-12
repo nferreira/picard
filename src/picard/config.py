@@ -196,7 +196,7 @@ class Config:
     rules: tuple[Rule, ...] = ()
     actions: dict[str, ActionDef] = field(default_factory=dict)
     inventories: dict[str, Inventory] = field(default_factory=dict)
-    unmapped: str = "ignore"
+    unmapped: str = "warn"
     impact: ImpactSettings = ImpactSettings()
     executor_options: dict[str, dict[str, Any]] = field(default_factory=dict)
     git_unknown_base: str = "full"  # what --base does when the base commit cannot be found
@@ -402,7 +402,7 @@ def parse(raw: dict[str, Any], source: Path | None = None, root: Path | None = N
             raise ConfigError(f"[runtime] {key} may only contain letters, digits, dots and dashes")
 
     actions, inventories, rules = _rules(raw, profiles, tiers_present=set(tiers))
-    policy = _table(raw, "rules_policy").get("unmapped", "ignore")
+    policy = _table(raw, "rules_policy").get("unmapped", "warn")
     if policy not in UNMAPPED_POLICIES:
         raise ConfigError(f"[rules_policy] unmapped must be one of {', '.join(UNMAPPED_POLICIES)}")
 

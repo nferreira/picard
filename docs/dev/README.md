@@ -26,6 +26,7 @@ For people who change picard itself, or who need to know why it behaves as it do
 | [0009](adr/0009-dev-group-edges-are-not-dependency-cycles.md) | dev-group edges are kept for impact and not counted as cycles |
 | [0010](adr/0010-simulate-reads-the-pull-request-with-gh.md) | `--pr` reads pull requests with the GitHub CLI |
 | [0011](adr/0011-an-unlisted-lockfile-is-global.md) | a lockfile picard recognises is global unless narrowed or covered by a rule |
+| [0012](adr/0012-unmapped-files-are-reported-by-default.md) | a file nothing covers is reported by default (`unmapped = "warn"`) |
 
 ## Rules of the house
 

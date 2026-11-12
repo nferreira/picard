@@ -7,7 +7,7 @@ what must run when those files change. Rules complement the graph; they do not r
 
 ```toml
 [rules_policy]
-unmapped = "full"             # ignore | warn | full: a file no rule and no package covers
+unmapped = "full"             # ignore | warn (default) | full: a file no rule and no package covers
 
 [inventory.model]             # resolves the captured {model} to an id and a status
 file = "models/inventory.toml"
@@ -35,7 +35,9 @@ profile = "full"              # optional: the profile these files demand (a docs
    dataset or YAML change does not run unit suites.
 4. A file no rule matches goes to the code graph, as before.
 5. `unmapped` decides what happens to a file that no rule, package, docs glob or global glob
-   covers: `full` runs everything (recommended), `warn` only warns, `ignore` does nothing.
+   covers: `warn` (the default) says so in the plan and runs what it ran before, `full` runs
+   everything (recommended once the repo is mapped), `ignore` does nothing and says nothing. No gate
+   reads a warning, so `warn` cannot fail a pipeline.
 6. `full` absorbs everything.
 
 Glob syntax for `match`: `*` within a segment, `**` across segments, `?` one character, and
