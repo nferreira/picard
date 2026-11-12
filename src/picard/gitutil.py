@@ -285,6 +285,31 @@ def _fetch_base(base: str, shallow: bool, cwd: Path | None = None) -> None:
     )
 
 
+def has_commit(ref: str, cwd: Path | None = None) -> bool:
+    """Whether `ref` names a commit in this clone."""
+    return not ref.startswith("-") and _ref_exists(ref, cwd)
+
+
+def fetch_pull_head(number: int, cwd: Path | None = None) -> bool:
+    """Fetch a GitHub pull request's head from origin. False when there is no origin or it fails."""
+    if not _has_origin(cwd):
+        return False
+    try:
+        _git(
+            "fetch",
+            "--no-tags",
+            "--quiet",
+            "origin",
+            f"pull/{int(number)}/head",
+            cwd=cwd,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            timeout=FETCH_TIMEOUT,
+        )
+    except GitError:
+        return False
+    return True
+
+
 def _try_merge_base(base: str, head: str, cwd: Path | None = None) -> str | None:
     if base.startswith("-") or not _ref_exists(base, cwd):
         return None

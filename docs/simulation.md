@@ -15,12 +15,43 @@ needs nothing installed (`picard`).
 | `--local --against upstream` | commits not pushed yet, plus uncommitted work | a pre-push check |
 | `--local --against <ref>` | commits since any ref, plus uncommitted work | comparing with a release branch |
 | `--local --no-working` | committed changes only | what a PR would contain |
+| `--pr [N]` | the pull request's own commits, **with its title, body and labels** (GitHub, read with `gh`); without a number, pick one from a list | "what will CI do for PR N?" |
 | `--base REF` | `git diff REF...HEAD` (a missing base is fetched once, then [`[git] unknown_base`](configuration.md#git) decides) | CI: the PR base commit |
 
 The first match wins. Without `--title`, a change with no commit yet is planned from its paths
 alone: a source file demands `full`, a markdown file demands `docs`, and a title you add can
 only raise that. `--label NAME` (repeatable; `PICARD_LABELS` when absent) adds PR labels, so
 `--label ci:full` previews a forced full run.
+
+### Simulating a pull request
+
+`picard simulate --pr 123` plans a pull request the way CI does. A local run has your commits but
+not the three other inputs CI uses: the PR title (it decides the profile and the release), its body
+(a `BREAKING CHANGE:` footer) and its labels (`ci:full`). `--pr` reads them, and the two commits to
+diff, with the GitHub CLI (`gh`, logged in), then plans every tier as `pipeline-pr` would.
+
+```sh
+picard simulate --pr 123                 # a pull request by number (or URL)
+picard simulate --pr                     # list recent pull requests (open, merged, closed) and pick
+picard simulate --pr 123 --label ci:full # what if it were labelled ci:full
+picard simulate --pr 123 --title 'feat(x): y (ABC-1)'   # what if the title were this
+picard simulate --pr 123 --tiers 1,3 --format json
+```
+
+- Without a number, picard lists the 30 most recent pull requests of any state (open, merged or
+  closed, each with its state and branch, the checked-out branch's starred) and asks which one.
+  Enter takes the starred one, `q` quits. The list and the prompt go to stderr, so `--format json`
+  stays clean. With no terminal (CI, a pipe) it prints the list and asks for a number instead of
+  waiting. Older pull requests are reached by number.
+- `--title` and `--body` **replace** the pull request's. `--label` **adds** to its labels.
+- It cannot be combined with `--files`, `--files-from`, `--staged`, `--working`, `--base` or
+  `--local`: the pull request says what changed.
+- The head commit is fetched from origin when it is not in the clone (`pull/<N>/head`). If that
+  fails, the file list GitHub gives is used instead. That list has no commits, so a lockfile change
+  cannot be narrowed and runs everything: more, never less. A base that is not in the clone behaves
+  as it does for `--base` (`[git] unknown_base`).
+- Without `gh`, `--pr` stops and says to install it, or to pass `--title`, `--label` and `--base`
+  yourself. picard itself needs only git; `gh` is used by this option alone.
 
 ### Which branch is "the origin branch"
 

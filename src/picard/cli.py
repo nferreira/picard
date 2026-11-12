@@ -40,6 +40,7 @@ from pathlib import Path
 from picard import __version__, gitutil, graph, report
 from picard import commits as cc
 from picard import config as cfgmod
+from picard import pr as prmod
 from picard.graph.impact import SetupError
 from picard.planner import build_plan, impact_of, render_markdown, render_text
 from picard.scaffold import ScaffoldError
@@ -128,6 +129,16 @@ def _parser() -> argparse.ArgumentParser:
     sim = sub.add_parser("simulate", help="show what every tier would do for a change")
     _add_change_args(sim)
     _add_color(sim)
+    sim.add_argument(
+        "--pr",
+        nargs="?",
+        const="",
+        metavar="N",
+        help="simulate a GitHub pull request as CI would plan it: its title, body, labels and "
+        "commits, read with `gh`. Give a number or URL, or no value to list recent pull "
+        "requests, open, merged and closed, and choose one. --title and --body replace the pull request's, --label adds "
+        "to its labels",
+    )
     sim.add_argument("--tiers", default="0,1,2,3,4", help="comma separated, default: all")
     sim.add_argument("--commands", action="store_true", help="also print every command")
     sim.add_argument("--run", action="store_true", help="execute the selected tiers in order")
@@ -423,8 +434,82 @@ def _parse_tiers(value: str, cfg: cfgmod.Config) -> list[int]:
     return tiers
 
 
+_PR_CONFLICTS = ("files", "files_from", "staged", "working", "base", "local")
+
+
+def _choose_pull_request() -> str:
+    """`--pr` without a value: list recent pull requests (any state) and let the person pick."""
+    try:
+        items = prmod.list_recent()
+    except prmod.PullRequestError as exc:
+        raise cfgmod.ConfigError(str(exc)) from exc
+    if not items:
+        raise cfgmod.ConfigError("there are no pull requests to choose from")
+    branch = gitutil.current_branch()
+    if not prmod.interactive():
+        for line in prmod.render_choices(items, branch):
+            print(line, file=sys.stderr)
+        raise cfgmod.ConfigError(
+            "--pr needs a pull request number when there is no terminal to choose from, "
+            f"for example: picard simulate --pr {items[0].number}"
+        )
+    try:
+        return str(prmod.choose(items, branch))
+    except prmod.PullRequestError as exc:
+        raise cfgmod.ConfigError(str(exc)) from exc
+
+
+def _pr_change(args: argparse.Namespace, cfg: cfgmod.Config) -> Change:
+    """The change a pull request makes, planned from what CI would see.
+
+    The pull request supplies the title, body and labels and the two commits to diff, then the
+    ordinary `--base` path does the rest (so a base that is not in the clone fails closed in the
+    same way). A head that is not in the clone is fetched from origin once; failing that, the
+    platform's own file list is used, which cannot narrow a lockfile change and so runs more,
+    never less.
+    """
+    given = [f"--{name.replace('_', '-')}" for name in _PR_CONFLICTS if getattr(args, name)]
+    if given:
+        raise cfgmod.ConfigError(f"--pr reads what changed from the pull request: drop {given[0]}")
+    try:
+        found = prmod.fetch(args.pr or _choose_pull_request())
+    except prmod.PullRequestError as exc:
+        raise cfgmod.ConfigError(str(exc)) from exc
+    labels = list(dict.fromkeys([*found.labels, *(args.label or [])]))
+    source = f"PR #{found.number} {found.base_ref}...{found.head_ref} ({found.state.lower()})"
+    titles = list(args.title or []) or [found.title]
+    body = args.body if args.body is not None else found.body
+    if not gitutil.has_commit(found.head_sha) and not gitutil.fetch_pull_head(found.number):
+        print(
+            f"picard: warning: the head of PR #{found.number} is not in this clone and could not "
+            "be fetched; using the file list GitHub gives, so a lockfile change runs everything",
+            file=sys.stderr,
+        )
+        try:
+            files = prmod.changed_paths(found.number)
+        except prmod.PullRequestError as exc:
+            raise cfgmod.ConfigError(str(exc)) from exc
+        return Change(files, titles, body, False, source, None, labels)
+    local = argparse.Namespace(**vars(args))
+    local.title, local.body, local.label = titles, body, labels
+    local.base, local.head = found.base_sha, found.head_sha
+    change = _change(local, cfg, need_diff=True)
+    return Change(
+        change.files,
+        change.titles,
+        change.body,
+        change.paths_only,
+        source,
+        change.revisions,
+        change.labels,
+        change.full_reasons,
+    )
+
+
 def _simulation_change(args: argparse.Namespace, cfg: cfgmod.Config) -> Change:
     """Like _change, but a bare `simulate` (or `affected`) means "the current branch"."""
+    if getattr(args, "pr", None) is not None:
+        return _pr_change(args, cfg)
     if not _has_source(args):
         args.local = True
     return _change(args, cfg, need_diff=True)
@@ -677,6 +762,13 @@ def _cmd_validate(args: argparse.Namespace) -> int:
         f"ok: {len(cfg.packages)} package(s) ({sources}), {len(cfg.profiles)} profile(s), "
         f"tiers {sorted(cfg.tiers)}"
     )
+    if cfg.cycles_found:
+        shown = "; ".join(" -> ".join((*cycle, cycle[0])) for cycle in cfg.cycles_found)
+        print(
+            f"picard: note: {len(cfg.cycles_found)} dependency cycle(s) accepted by "
+            f'[graph] cycles = "allow": {shown}',
+            file=sys.stderr,
+        )
     return 0
 
 

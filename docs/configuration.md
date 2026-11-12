@@ -7,7 +7,8 @@ picard validate-config
 ```
 
 Validation is strict: unknown profiles, extras, release values, package references,
-dependency cycles, unsafe characters and bad regexes fail with a message naming the key.
+dependency cycles (unless `[graph] cycles = "allow"`), unsafe characters and bad regexes fail with a
+message naming the key.
 
 ## `[runtime]`
 
@@ -141,6 +142,35 @@ workflow), or a comma-separated list. Pass them through `env:`, never interpolat
 Matching is case-sensitive: the label must be spelled exactly as in `[labels] full`, so `CI:Full`
 does not force anything when `full = "ci:full"`. The PR workflow passes the labels and re-plans
 when a label is added or removed (`labeled`, `unlabeled`).
+
+## `[graph]`
+
+What picard does with a dependency cycle between packages. Optional.
+
+```toml
+[graph]
+cycles = "allow"   # "error" (default): refuse a cycle. "allow": accept it.
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `cycles` | `"error"` | `"error"` fails `validate-config` and every command on a cycle, naming it. `"allow"` accepts cycles. |
+
+**Only runtime edges make a cycle.** A package that lists a sibling in a dev or test group while
+that sibling depends on it for real is not a cycle: the edge from the first package to the sibling
+is not something it needs to run. Providers mark such edges as dev-only (`dev-dependencies` in uv,
+`devDependencies` in npm, `[dev-dependencies]` in Cargo, including per target). They stay in the
+graph, because the first package's tests do need the sibling, so a change to the sibling still
+selects it. They are not counted when looking for cycles. A name that is also a runtime dependency
+(or, in uv, an extra), and an edge you declare by hand in `[[packages]] depends_on`, is a runtime
+edge. `picard graph` and the impact walk see every edge either way.
+
+A real runtime cycle is still an error unless you set `cycles = "allow"`. With `"allow"` every
+edge is kept: the members of a cycle depend on one another, so a change to one affects all of them
+and everything that depends on any of them. `validate-config` reports each accepted cycle on
+stderr (`picard: note: 1 dependency cycle(s) accepted ... a -> b -> a`) so it is never silent, and
+`picard graph` marks the way back with `↺ name  (cycle)` instead of descending again. A repository
+without a `[graph]` table behaves as before.
 
 ## `[git]`
 

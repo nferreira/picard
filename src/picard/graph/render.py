@@ -39,19 +39,30 @@ def render_tree(cfg: Config, impact: Impact | None = None, *, color: bool = Fals
     used = {d for p in cfg.packages.values() for d in p.depends_on}
     roots = [n for n in cfg.packages if n not in used] or list(cfg.packages)
     lines: list[str] = []
+    cyclic = False
 
-    def walk(name: str, prefix: str, last: bool, top: bool) -> None:
+    def walk(name: str, prefix: str, last: bool, top: bool, above: frozenset[str]) -> None:
+        nonlocal cyclic
         branch = "" if top else ("└─ " if last else "├─ ")
         lines.append(f"{prefix}{branch}{label(name)}")
         children = cfg.packages[name].depends_on
         extension = "" if top else ("   " if last else "│  ")
+        path = above | {name}
         for i, child in enumerate(children):
-            walk(child, prefix + extension, i == len(children) - 1, False)
+            if child in path:
+                # A dependency cycle (allowed by [graph] cycles): say so instead of descending.
+                cyclic = True
+                twig = "└─ " if i == len(children) - 1 else "├─ "
+                lines.append(f"{prefix}{extension}{twig}↺ {child}  (cycle)")
+                continue
+            walk(child, prefix + extension, i == len(children) - 1, False, path)
 
     for root in roots:
-        walk(root, "", True, True)
+        walk(root, "", True, True, frozenset())
 
     legend = "● changed   ◐ affected (depends on a change)   ○ untouched   (indent = depends on)"
+    if cyclic:
+        legend += "   ↺ depends back on a package above (cycle)"
     if impact is not None:
         lines.append("")
         lines.append(

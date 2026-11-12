@@ -24,7 +24,13 @@ from picard.graph.impact import (
     owner,
     owns,
 )
-from picard.graph.model import NAME_OK, DependencyGraph, Discovered, DiscoveryError
+from picard.graph.model import (
+    NAME_OK,
+    DependencyGraph,
+    Discovered,
+    DiscoveryError,
+    find_cycles,
+)
 from picard.graph.render import render_mermaid, render_tree, render_why, split_files
 
 if TYPE_CHECKING:
@@ -43,6 +49,7 @@ __all__ = [
     "compute_impact",
     "discover",
     "everything",
+    "find_cycles",
     "owner",
     "owns",
     "render_mermaid",
