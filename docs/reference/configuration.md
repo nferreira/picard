@@ -79,7 +79,7 @@ footer). The list is enforced by a test against `pipeline-extra`.
 |---|---|
 | `docs` | Globs that demand only the lowest profile. |
 | `default` | Profile demanded by a file that matches nothing else. |
-| `global` | Globs that make every package affected (lockfiles, the config, workflows). A lockfile also listed under `[lockfiles] narrow` is narrowed instead. |
+| `global` | Globs that make every package affected (the config, workflows). A lockfile picard recognises is global without being listed, unless it is under `[lockfiles] narrow` or a rule covers it. |
 | `[[paths.floor]]` | `globs` + `profile`: the minimum profile for matching files. |
 
 Glob syntax: `*` within a segment, `**` across segments, `?` one character.
@@ -94,6 +94,15 @@ Glob syntax: `*` within a segment, `**` across segments, `?` one character.
 [lockfiles]
 narrow = ["uv.lock", "**/package-lock.json"]
 ```
+
+**A lockfile is global by default.** One picard recognises by name (`uv.lock`, `poetry.lock`,
+`Pipfile.lock`, `Cargo.lock`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `go.sum`,
+`composer.lock`, `Gemfile.lock`, in any directory) affects every package when it changes, even if
+`[paths] global` does not list it. A change picard cannot place must never plan nothing, and a
+dependency bump is such a change. Three things take it out of that: listing it under `narrow`
+(below), a `[[rules]]` entry that matches it (a rule is looked at first), or it not being a
+lockfile. `pnpm-lock.yaml` and `yarn.lock` cannot be narrowed, so give them a rule to run what
+they affect.
 
 Listing a lockfile is the opt-in: a file that matches `narrow` is handled here even when it
 also matches `[paths] global`. A listed lockfile counts as covered for

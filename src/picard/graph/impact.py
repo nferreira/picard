@@ -127,10 +127,14 @@ class ImpactEngine(ABC):
         self.revisions = revisions
         # A listed lockfile is attributed to packages, even when it also matches [paths] global:
         # listing it under [lockfiles] narrow is the opt-in.
-        lockfiles = [f for f in files if matches(f, cfg.narrow_lockfiles)]
-        listed = set(lockfiles)
+        narrowed = [f for f in files if matches(f, cfg.narrow_lockfiles)]
+        listed = set(narrowed)
         rest = [f for f in files if f not in listed]
-        global_files = tuple(f for f in rest if matches(f, cfg.global_globs))
+        # A lockfile picard recognises that is not narrowed is global too, whether or not
+        # [paths] global lists it: a dependency bump must not plan nothing.
+        global_files = tuple(
+            f for f in rest if matches(f, cfg.global_globs) or lockfiles.is_lockfile(f)
+        )
         if global_files:
             decided = dict.fromkeys(cfg.packages, "global file")
             result = Impact((), {n: (n,) for n in cfg.packages}, True, global_files, (), decided)
@@ -138,8 +142,8 @@ class ImpactEngine(ABC):
             result = self.compute(cfg, rest)
         else:
             result = Impact((), {}, False, ())
-        if lockfiles:
-            result = merge(cfg, result, self.lockfile_impact(cfg, lockfiles))
+        if narrowed:
+            result = merge(cfg, result, self.lockfile_impact(cfg, narrowed))
         return result
 
     @abstractmethod

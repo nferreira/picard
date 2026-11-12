@@ -32,6 +32,28 @@ class LockfileError(ValueError):
 
 SUPPORTED = {"uv.lock": "uv", "Cargo.lock": "cargo", "package-lock.json": "npm"}
 
+# Lockfiles picard recognises by name. One that changes is global (every package) unless it is
+# listed under `[lockfiles] narrow` or a rule covers it, because a dependency bump it cannot place
+# is exactly the kind of change that must not plan nothing. Only SUPPORTED ones can be narrowed.
+KNOWN_LOCKFILES = frozenset(
+    {
+        *SUPPORTED,
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "poetry.lock",
+        "Pipfile.lock",
+        "go.sum",
+        "composer.lock",
+        "Gemfile.lock",
+    }
+)
+
+
+def is_lockfile(path: str) -> bool:
+    """Whether `path` names a lockfile picard recognises (any directory)."""
+    return PurePosixPath(path).name in KNOWN_LOCKFILES
+
+
 UV_ROOT = "<root>"  # the uv root member key when the workspace has no root project
 
 # Fields that only verify content picard already identifies by version and source.
