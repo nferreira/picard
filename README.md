@@ -17,7 +17,7 @@ It uses four inputs:
   runs only that model's tests and pipelines.
 
 picard is a Python package with a `picard` command. The concepts are in
-[docs/concepts.md](docs/concepts.md).
+[docs/dev/concepts.md](docs/dev/concepts.md).
 
 No hosting or deploy platform is assumed. The release tier ends at a `vX.Y.Z` tag and a
 GitHub Release, and your repo adds whatever deploy step it needs after that.
@@ -44,7 +44,7 @@ everything when picard cannot tell), a file no rule covers runs everything, a ti
 label (`ci:full`) can raise the bar and never lower it, an engine that fails or does not own a
 file hands the question to its fallback engine, a base that is not in the clone runs everything,
 and the gate fails a job that had to run and did not. The full list is in
-[docs/concepts.md](docs/concepts.md#never-run-less-than-the-truth).
+[docs/concepts.md](docs/dev/concepts.md#never-run-less-than-the-truth).
 
 ## Tiers
 
@@ -62,7 +62,7 @@ way:
 | 5 · Release | push to `main` | Conventional Commits since last tag | n/a | n/a |
 
 Tiers 0 to 4 are one `[tiers.N]` table each. Tier 5 is Release Please.
-Details: [docs/tiers.md](docs/tiers.md).
+Details: [docs/reference/tiers.md](docs/reference/tiers.md).
 
 ## Conventional Commits control the pipeline
 
@@ -82,7 +82,7 @@ planned. Its type picks a **profile** (how much to verify) and a **release effec
 
 **Paths can raise the bar, never lower it.** A `docs:` title on a PR that edits source runs the
 full profile and warns, so a title cannot be used to skip tests. A title that cannot be parsed
-falls back to the strictest profile. Full rules: [docs/conventional-commits.md](docs/conventional-commits.md).
+falls back to the strictest profile. Full rules: [docs/reference/conventional-commits.md](docs/reference/conventional-commits.md).
 
 ## Install
 
@@ -113,7 +113,7 @@ After upgrading picard, run `picard update` to refresh the files picard owns. It
 release-please config, CODEOWNERS, Dependabot, the PR template) only when they are missing,
 and touches nothing else. CI installs a pinned picard through the repository variables
 `PICARD_REPOSITORY` and `PICARD_REF` and the secret `PICARD_TOKEN`.
-Checklist: [docs/adoption.md](docs/adoption.md).
+Checklist: [docs/tutorial/07-ci-and-rollout.md](docs/tutorial/07-ci-and-rollout.md).
 
 ## Layout
 
@@ -127,7 +127,8 @@ src/picard/                         the planner (Python 3.11+, standard library 
   lockfiles.py                        diff uv.lock, Cargo.lock and package-lock.json for [lockfiles] narrow
   scaffold.py                         picard init / update / install-hooks
   templates/                          what `picard init` writes into a repo
-tests/, docs/                       tests and documentation
+tests/                              tests
+docs/                               tutorial/, reference/ and dev/ documentation
 ```
 
 A repo after `picard init`:
@@ -141,7 +142,7 @@ A repo after `picard init`:
 .picard/templates/pytest/         marker plugin to copy into your test root
 ```
 
-Why a package and not vendored tooling: [ADR 0006](docs/adr/0006-picard-is-a-python-package.md).
+Why a package and not vendored tooling: [ADR 0006](docs/dev/adr/0006-picard-is-a-python-package.md).
 
 ## CLI
 
@@ -150,6 +151,7 @@ Run from the repo root. Nothing to install.
 ```sh
 picard simulate --local                  # what would CI do for everything I have locally?
 picard simulate --files a.py b.py        # ... for a change I have not made
+picard simulate --pr                     # ... for a pull request picked from a list, any state (needs gh)
 picard simulate --local --tiers 0,1,2 --run   # run those tiers for real
 picard changed                           # what differs locally, and against which branch
 picard graph --files packages/x/y.py     # the dependency graph with the impact marked
@@ -167,7 +169,7 @@ picard simulate --debug --files a.py     # --debug on any command traces what th
 ```
 
 Local runs consider commits since the branch yours grew out of plus uncommitted work.
-Details: [docs/simulation.md](docs/simulation.md).
+Details: [docs/reference/simulation.md](docs/reference/simulation.md).
 
 ## Monorepos and other languages
 
@@ -189,10 +191,10 @@ import-level precision in the languages it understands and hands every other fil
 external tool. Pick one in `[impact]`, and run `picard setup` to let the engine prepare the
 repo. Executors can also hand a package's suites to Pants, Turborepo or Nx, so their cache and
 task ordering apply. Nothing locks you into a build system.
-See [ADR 0003](docs/adr/0003-graph-from-ecosystem-manifests.md),
-[ADR 0005](docs/adr/0005-plugin-architecture.md),
-[ADR 0007](docs/adr/0007-engines-receive-the-change-revisions.md) and
-[configuration](docs/configuration.md#discover). Per package, `test_paths` keeps a test-only
+See [ADR 0003](docs/dev/adr/0003-graph-from-ecosystem-manifests.md),
+[ADR 0005](docs/dev/adr/0005-plugin-architecture.md),
+[ADR 0007](docs/dev/adr/0007-engines-receive-the-change-revisions.md) and
+[configuration](docs/reference/configuration.md#discover). Per package, `test_paths` keeps a test-only
 change from running the dependents, `always = true` keeps a package in every PR, and
 `shards = N` splits its tests over N jobs. Executor options add `retries`, a `deps` suite
 (deptry, knip) and, in a tier with `selection = true`, test selection inside a suite
@@ -230,4 +232,4 @@ uv run pytest            # tests only
 - This repository's own `.github/workflows/ci.yml` also uses action tags (`checkout`, `setup-uv`)
   that were not checked against the registry. Pin them to commit SHAs too.
 - Never put a PR title or body into a `run:` step with `${{ }}`. Pass it through `env:`, as the
-  actions here do (see [docs/architecture.md](docs/architecture.md#security-model)).
+  actions here do (see [docs/dev/architecture.md](docs/dev/architecture.md#security-model)).

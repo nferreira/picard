@@ -26,6 +26,7 @@ PLACEHOLDERS = ("package", "path", "markers")
 SAFE_VALUE = re.compile(r"^[A-Za-z0-9._-]+$")  # captured names and ids end up in commands
 PACKAGE_SELECTORS = ("affected", "baseline", "all")
 UNKNOWN_BASE_MODES = ("full", "fail")
+CYCLE_MODES = ("error", "allow")  # [graph] cycles: refuse a dependency cycle, or accept it
 # Lockfiles picard can attribute to packages. Only the names live here, so loading a config
 # never needs the parsers.
 NARROWABLE_LOCKFILES = ("Cargo.lock", "package-lock.json", "uv.lock")
@@ -97,6 +98,12 @@ class Package:
     always: bool = False  # in the affected set of every tier that compares against a diff
     shards: int = 1  # a shardable suite runs as this many matrix jobs
     test_paths: tuple[str, ...] = ()  # globs, relative to `path`, that only hold tests
+    dev_depends_on: tuple[str, ...] = ()  # the part of depends_on found only in a dev group
+
+    @property
+    def runtime_depends_on(self) -> tuple[str, ...]:
+        """What the package needs to run: `depends_on` without the dev-group-only edges."""
+        return tuple(d for d in self.depends_on if d not in self.dev_depends_on)
 
 
 @dataclass(frozen=True)
@@ -189,12 +196,14 @@ class Config:
     rules: tuple[Rule, ...] = ()
     actions: dict[str, ActionDef] = field(default_factory=dict)
     inventories: dict[str, Inventory] = field(default_factory=dict)
-    unmapped: str = "ignore"
+    unmapped: str = "warn"
     impact: ImpactSettings = ImpactSettings()
     executor_options: dict[str, dict[str, Any]] = field(default_factory=dict)
     git_unknown_base: str = "full"  # what --base does when the base commit cannot be found
     full_label: str = "ci:full"  # a PR label that forces a full run; "" disables it
     narrow_lockfiles: tuple[str, ...] = ()  # lockfile globs attributed to packages, not global
+    cycles: str = "error"  # [graph] cycles: what a dependency cycle between packages does
+    cycles_found: tuple[tuple[str, ...], ...] = ()  # the cycles accepted when cycles = "allow"
     registries: Registries = field(default_factory=Registries, compare=False)
     root: Path | None = field(default=None, compare=False)
     source: Path | None = field(default=None, compare=False)
@@ -329,7 +338,12 @@ def parse(raw: dict[str, Any], source: Path | None = None, root: Path | None = N
         for dep in pkg.depends_on:
             if dep not in packages:
                 raise ConfigError(f"package '{pkg.name}' depends on unknown package '{dep}'")
-    _check_acyclic(packages)
+    cycles = _cycles_mode(raw)
+    cycles_found: tuple[tuple[str, ...], ...] = ()
+    if cycles == "error":
+        _check_acyclic(packages)
+    else:
+        cycles_found = graph.find_cycles({n: p.runtime_depends_on for n, p in packages.items()})
 
     path_rules = tuple(
         PathRule(
@@ -388,7 +402,7 @@ def parse(raw: dict[str, Any], source: Path | None = None, root: Path | None = N
             raise ConfigError(f"[runtime] {key} may only contain letters, digits, dots and dashes")
 
     actions, inventories, rules = _rules(raw, profiles, tiers_present=set(tiers))
-    policy = _table(raw, "rules_policy").get("unmapped", "ignore")
+    policy = _table(raw, "rules_policy").get("unmapped", "warn")
     if policy not in UNMAPPED_POLICIES:
         raise ConfigError(f"[rules_policy] unmapped must be one of {', '.join(UNMAPPED_POLICIES)}")
 
@@ -437,6 +451,8 @@ def parse(raw: dict[str, Any], source: Path | None = None, root: Path | None = N
         git_unknown_base=_unknown_base(raw),
         full_label=_full_label(raw),
         narrow_lockfiles=_narrow_lockfiles(raw),
+        cycles=cycles,
+        cycles_found=cycles_found,
         registries=registries,
         root=root,
         source=source,
@@ -447,6 +463,17 @@ def _unknown_base(raw: dict[str, Any]) -> str:
     value = _table(raw, "git").get("unknown_base", "full")
     if value not in UNKNOWN_BASE_MODES:
         raise ConfigError(f"[git] unknown_base must be one of {', '.join(UNKNOWN_BASE_MODES)}")
+    return value
+
+
+def _cycles_mode(raw: dict[str, Any]) -> str:
+    table = _table(raw, "graph")
+    unknown = sorted(set(table) - {"cycles"})
+    if unknown:
+        raise ConfigError(f"[graph] has unknown key '{unknown[0]}'; known: cycles")
+    value = table.get("cycles", "error")
+    if value not in CYCLE_MODES:
+        raise ConfigError(f"[graph] cycles must be one of {', '.join(CYCLE_MODES)}")
     return value
 
 
@@ -625,6 +652,7 @@ def _packages(raw: dict[str, Any], root: Path | None, registries: Registries) ->
                 provider=item.provider,
                 executor=executor,
                 test_paths=test_paths,
+                dev_depends_on=item.dev_depends_on,
             )
 
     for p in raw.get("packages", []):
@@ -651,6 +679,7 @@ def _packages(raw: dict[str, Any], root: Path | None, registries: Registries) ->
                 name=name,
                 path=(p["path"].strip("/") or ".") if "path" in p else base.path,
                 depends_on=tuple(dict.fromkeys((*base.depends_on, *extra_deps))),
+                dev_depends_on=tuple(d for d in base.dev_depends_on if d not in extra_deps),
                 baseline=bool(p.get("baseline", base.baseline)),
                 commands={**base.commands, **extra_commands},
                 provider=base.provider,
@@ -673,9 +702,14 @@ def _check_acyclic(packages: dict[str, Package]) -> None:
         if state.get(name) == 2:
             return
         if state.get(name) == 1:
-            raise ConfigError("package dependency cycle: " + " -> ".join((*trail, name)))
+            raise ConfigError(
+                "package dependency cycle: "
+                + " -> ".join((*trail, name))
+                + "; edges that exist only in a dev group are not counted, to accept a real cycle"
+                + ' set [graph] cycles = "allow"'
+            )
         state[name] = 1
-        for dep in packages[name].depends_on:
+        for dep in packages[name].runtime_depends_on:
             visit(dep, (*trail, name))
         state[name] = 2
 

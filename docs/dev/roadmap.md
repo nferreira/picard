@@ -1,6 +1,6 @@
 # Roadmap: what else can improve the pipeline
 
-What is already built is in [tiers](tiers.md) and [architecture](architecture.md), and the
+What is already built is in [tiers](../reference/tiers.md) and [architecture](architecture.md), and the
 comparison with other tools in [missing features](missing-features.md). These are candidates,
 grouped by what they buy, with the tier each would land in. A row marked **built** says what
 is done and what, if anything, is left.

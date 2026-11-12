@@ -8,19 +8,25 @@ from pathlib import Path
 from picard.graph.model import Discovered, DiscoveryError, checked
 from picard.graph.providers.base import GraphProvider
 
-_DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
+_RUNTIME_TABLES = ("dependencies", "build-dependencies")
+_DEV_TABLES = ("dev-dependencies",)
 
 
-def _dependency_names(manifest: dict) -> set[str]:
-    """Crate names a manifest depends on, honouring `package = "real-name"` renames."""
-    tables = [manifest.get(t, {}) for t in _DEPENDENCY_TABLES]
+def _names(manifest: dict, kinds: tuple[str, ...]) -> set[str]:
+    tables = [manifest.get(t, {}) for t in kinds]
     for target in manifest.get("target", {}).values():
-        tables.extend(target.get(t, {}) for t in _DEPENDENCY_TABLES)
+        tables.extend(target.get(t, {}) for t in kinds)
     names: set[str] = set()
     for table in tables:
         for key, spec in table.items():
             names.add(spec.get("package", key) if isinstance(spec, dict) else key)
     return names
+
+
+def _dependency_names(manifest: dict) -> tuple[set[str], set[str]]:
+    """(runtime, dev-only) crate names, honouring `package = "real-name"` renames."""
+    runtime = _names(manifest, _RUNTIME_TABLES)
+    return runtime, _names(manifest, _DEV_TABLES) - runtime
 
 
 class CargoProvider(GraphProvider):
@@ -47,6 +53,15 @@ class CargoProvider(GraphProvider):
                 crates[crate] = (directory.relative_to(root).as_posix() or ".", data)
         found = []
         for crate, (path, data) in crates.items():
-            deps = sorted(_dependency_names(data) & set(crates) - {crate})
-            found.append(Discovered(crate, path, tuple(deps), self.name))
+            runtime, dev_only = _dependency_names(data)
+            others = set(crates) - {crate}
+            found.append(
+                Discovered(
+                    crate,
+                    path,
+                    tuple(sorted((runtime | dev_only) & others)),
+                    self.name,
+                    tuple(sorted(dev_only & others)),
+                )
+            )
         return checked(found)

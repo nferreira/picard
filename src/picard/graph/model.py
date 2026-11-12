@@ -23,6 +23,10 @@ class Discovered:
     path: str
     depends_on: tuple[str, ...]
     provider: str
+    # The subset of `depends_on` that exists only in a development group (tests, tooling). It is
+    # not what the package needs to run, so it never makes a dependency cycle, but it stays an
+    # edge: a change to the dependency must still select the package whose tests use it.
+    dev_depends_on: tuple[str, ...] = ()
 
 
 def checked(found: list[Discovered]) -> list[Discovered]:
@@ -31,6 +35,60 @@ def checked(found: list[Discovered]) -> list[Discovered]:
         if not NAME_OK.fullmatch(item.name):
             raise DiscoveryError(f"unsafe package name {item.name!r} at {item.path}")
     return found
+
+
+def find_cycles(depends_on: Mapping[str, Sequence[str]]) -> tuple[tuple[str, ...], ...]:
+    """The cycles of a graph, each as the packages that depend on one another.
+
+    One entry per strongly connected component of two or more packages, or of one package that
+    depends on itself. Members follow the order of `depends_on`, and so do the entries, so the
+    answer is stable. Iterative (Tarjan), so a long chain cannot exhaust the interpreter's stack.
+    Every dependency must be a key of `depends_on`, as `DependencyGraph` also requires.
+    """
+    order = {name: position for position, name in enumerate(depends_on)}
+    index: dict[str, int] = {}
+    low: dict[str, int] = {}
+    open_: list[str] = []
+    on_stack: set[str] = set()
+    found: list[tuple[str, ...]] = []
+
+    for root in depends_on:
+        if root in index:
+            continue
+        index[root] = low[root] = len(index)
+        open_.append(root)
+        on_stack.add(root)
+        work = [(root, iter(depends_on[root]))]
+        while work:
+            node, deps = work[-1]
+            descended = False
+            for dep in deps:
+                if dep not in index:
+                    index[dep] = low[dep] = len(index)
+                    open_.append(dep)
+                    on_stack.add(dep)
+                    work.append((dep, iter(depends_on[dep])))
+                    descended = True
+                    break
+                if dep in on_stack:
+                    low[node] = min(low[node], index[dep])
+            if descended:
+                continue
+            work.pop()
+            if work:
+                parent = work[-1][0]
+                low[parent] = min(low[parent], low[node])
+            if low[node] == index[node]:
+                members: list[str] = []
+                while True:
+                    member = open_.pop()
+                    on_stack.discard(member)
+                    members.append(member)
+                    if member == node:
+                        break
+                if len(members) > 1 or node in depends_on[node]:
+                    found.append(tuple(sorted(members, key=order.__getitem__)))
+    return tuple(sorted(found, key=lambda cycle: order[cycle[0]]))
 
 
 class DependencyGraph:

@@ -1,4 +1,4 @@
-# pipeline.toml reference
+# `pipeline.toml` reference
 
 The file is `.picard/pipeline.toml`. Validate after every edit, from the repo root:
 
@@ -7,7 +7,8 @@ picard validate-config
 ```
 
 Validation is strict: unknown profiles, extras, release values, package references,
-dependency cycles, unsafe characters and bad regexes fail with a message naming the key.
+dependency cycles (unless `[graph] cycles = "allow"`), unsafe characters and bad regexes fail with a
+message naming the key.
 
 ## `[runtime]`
 
@@ -78,7 +79,7 @@ footer). The list is enforced by a test against `pipeline-extra`.
 |---|---|
 | `docs` | Globs that demand only the lowest profile. |
 | `default` | Profile demanded by a file that matches nothing else. |
-| `global` | Globs that make every package affected (lockfiles, the config, workflows). A lockfile also listed under `[lockfiles] narrow` is narrowed instead. |
+| `global` | Globs that make every package affected (the config, workflows). A lockfile picard recognises is global without being listed, unless it is under `[lockfiles] narrow` or a rule covers it. |
 | `[[paths.floor]]` | `globs` + `profile`: the minimum profile for matching files. |
 
 Glob syntax: `*` within a segment, `**` across segments, `?` one character.
@@ -93,6 +94,15 @@ Glob syntax: `*` within a segment, `**` across segments, `?` one character.
 [lockfiles]
 narrow = ["uv.lock", "**/package-lock.json"]
 ```
+
+**A lockfile is global by default.** One picard recognises by name (`uv.lock`, `poetry.lock`,
+`Pipfile.lock`, `Cargo.lock`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `go.sum`,
+`composer.lock`, `Gemfile.lock`, in any directory) affects every package when it changes, even if
+`[paths] global` does not list it. A change picard cannot place must never plan nothing, and a
+dependency bump is such a change. Three things take it out of that: listing it under `narrow`
+(below), a `[[rules]]` entry that matches it (a rule is looked at first), or it not being a
+lockfile. `pnpm-lock.yaml` and `yarn.lock` cannot be narrowed, so give them a rule to run what
+they affect.
 
 Listing a lockfile is the opt-in: a file that matches `narrow` is handled here even when it
 also matches `[paths] global`. A listed lockfile counts as covered for
@@ -141,6 +151,35 @@ workflow), or a comma-separated list. Pass them through `env:`, never interpolat
 Matching is case-sensitive: the label must be spelled exactly as in `[labels] full`, so `CI:Full`
 does not force anything when `full = "ci:full"`. The PR workflow passes the labels and re-plans
 when a label is added or removed (`labeled`, `unlabeled`).
+
+## `[graph]`
+
+What picard does with a dependency cycle between packages. Optional.
+
+```toml
+[graph]
+cycles = "allow"   # "error" (default): refuse a cycle. "allow": accept it.
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `cycles` | `"error"` | `"error"` fails `validate-config` and every command on a cycle, naming it. `"allow"` accepts cycles. |
+
+**Only runtime edges make a cycle.** A package that lists a sibling in a dev or test group while
+that sibling depends on it for real is not a cycle: the edge from the first package to the sibling
+is not something it needs to run. Providers mark such edges as dev-only (`dev-dependencies` in uv,
+`devDependencies` in npm, `[dev-dependencies]` in Cargo, including per target). They stay in the
+graph, because the first package's tests do need the sibling, so a change to the sibling still
+selects it. They are not counted when looking for cycles. A name that is also a runtime dependency
+(or, in uv, an extra), and an edge you declare by hand in `[[packages]] depends_on`, is a runtime
+edge. `picard graph` and the impact walk see every edge either way.
+
+A real runtime cycle is still an error unless you set `cycles = "allow"`. With `"allow"` every
+edge is kept: the members of a cycle depend on one another, so a change to one affects all of them
+and everything that depends on any of them. `validate-config` reports each accepted cycle on
+stderr (`picard: note: 1 dependency cycle(s) accepted ... a -> b -> a`) so it is never silent, and
+`picard graph` marks the way back with `↺ name  (cycle)` instead of descending again. A repository
+without a `[graph]` table behaves as before.
 
 ## `[git]`
 
@@ -221,7 +260,7 @@ there. Use it for a baseline suite that differs from the default test command.
 ## `[impact]`
 
 Which engine answers "what does this change affect". The graph itself always comes from
-`[[discover]]` and `[[packages]]`. See [architecture](architecture.md#impact-and-engines).
+`[[discover]]` and `[[packages]]`. See [architecture](../dev/architecture.md#impact-and-engines).
 
 ```toml
 [impact]
@@ -421,68 +460,5 @@ packages = ["worker"]      # tier 2 also runs these when the globs match
 
 ## `[[rules]]`, `[actions.*]`, `[inventory.*]`, `[rules_policy]`
 
-The code graph says which packages a code change affects. Configs, schemas, database
-definitions, datasets, baselines, docs and automation have no import graph, so **rules** say
-what must run when those files change. Rules complement the graph; they do not replace it.
-
-```toml
-[rules_policy]
-unmapped = "full"             # ignore | warn | full: a file no rule and no package covers
-
-[inventory.model]             # resolves the captured {model} to an id and a status
-file = "models/inventory.toml"
-entries = "model"             # the [[model]] tables in that file
-runnable = ["trainable"]      # statuses that may run actions using {model}
-
-[actions.train-model]         # a named command; never takes a file list
-run = "python -m train --data models/{model_dir}/data.csv --out build/{model}.json"
-tiers = [2]                   # optional: overrides the rule's tiers for this action
-needs = ["trainable"]         # optional: inventory statuses this action requires
-
-[[rules]]
-name = "model dataset"
-match = ["models/{model}/data/**"]       # {model} captures one path segment
-actions = ["run:test-model", "run:train-model", "require-review"]
-tiers = [0, 1, 2]             # optional, default [0, 1, 2]
-profile = "full"              # optional: the profile these files demand (a docs rule lowers it)
-```
-
-**Resolution**
-
-1. Each changed file uses the **first** rule whose `match` fits, top to bottom.
-2. The results of all files are **merged**; identical actions run once.
-3. A file a rule matches reaches the code graph only if the rule says `package` or `own`, so a
-   dataset or YAML change does not run unit suites.
-4. A file no rule matches goes to the code graph, as before.
-5. `unmapped` decides what happens to a file that no rule, package, docs glob or global glob
-   covers: `full` runs everything (recommended), `warn` only warns, `ignore` does nothing.
-6. `full` absorbs everything.
-
-**Actions**
-
-| Action | Meaning |
-|---|---|
-| `none` | nothing; combine with `profile = "docs"` for documentation |
-| `full` | every package |
-| `package` | the owning package and everything that depends on it (the graph) |
-| `own` | the owning package only |
-| `require-review` | recorded in the plan and shown as `REVIEW REQUIRED` |
-| `run:<name>` | the command of `[actions.<name>]`, with captures filled in, as one suite |
-
-`{markers}` is available in an action's command. `{package}` and `{path}` are not (they belong
-to package commands). A capture `{model}` becomes the inventory id when an inventory with that
-name exists, and `{model_dir}` is always the directory name.
-
-**Safety.** Captured names end up in shell commands and come from paths a PR controls, so they
-must match `[A-Za-z0-9._-]+`. Anything else, a name missing from the inventory, or an
-unreadable inventory runs **everything** and warns, and is never turned into a command. An
-action whose inventory status is not allowed is skipped **with a warning naming the status**.
-
-**Large pull requests.** Rules are matched inside the planner, so no file list goes through a
-command line or an environment variable. The plan lists at most 200 changed files plus the
-total (`changed_files_total`), because one string over 128 KiB fails at process start. Use
-`--files-from FILE` (NUL or newline separated, or `-` for stdin) to simulate thousands of paths.
-
-**`require-review`.** Today it is data: the plan lists it and `simulate` prints it. Blocking a
-merge until a person approves needs a CI decision (a required label, CODEOWNERS or an
-environment approval) that is not made yet.
+Rules say what must run when files with no import graph change. They have their own page:
+[rules.md](rules.md).

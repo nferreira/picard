@@ -12,6 +12,7 @@
 
 Where the changed files come from (first match wins):
   --files a b,c   simulate: exactly these paths, no git needed
+  --pr [N ...]    merged pull request(s): pick from a list, or name them (needs gh)
   --files-from F  the same, read from a file or stdin (NUL or newline separated)
   --staged        what is in the index
   --working       every uncommitted change, staged or not, plus untracked files
@@ -37,7 +38,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from picard import __version__, gitutil, graph, report
+from picard import __version__, gitutil, graph, prs, report
 from picard import commits as cc
 from picard import config as cfgmod
 from picard.graph.impact import SetupError
@@ -60,6 +61,13 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _pr_number(value: str) -> int:
+    try:
+        return int(value.lstrip("#"))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a pull request number: {value!r}") from None
+
+
 def _add_change_args(p: argparse.ArgumentParser) -> None:
     _add_common(p)
     p.add_argument("--files", nargs="+", metavar="PATH", help="simulate a change to these paths")
@@ -68,6 +76,22 @@ def _add_change_args(p: argparse.ArgumentParser) -> None:
         metavar="FILE",
         help="like --files, read from FILE or '-' (stdin), NUL or newline separated: "
         "for thousands of paths, which must never go through the command line",
+    )
+    p.add_argument(
+        "--pr",
+        nargs="*",
+        type=_pr_number,
+        metavar="NUMBER",
+        help="plan pull request(s), merged, closed or open, as CI would: their files, title, body "
+        "and labels; with no number, pick from a list of recent ones (needs the GitHub CLI, gh). "
+        "--title and --body replace theirs, --label adds to theirs",
+    )
+    p.add_argument(
+        "--pr-limit",
+        type=int,
+        default=30,
+        metavar="N",
+        help="with --pr: how many recent pull requests to list (default: %(default)s)",
     )
     p.add_argument("--staged", action="store_true", help="changed files = the git index")
     p.add_argument("--working", action="store_true", help="changed files = all uncommitted work")
@@ -231,7 +255,13 @@ def _read_file_list(source: str) -> list[str]:
 
 def _has_source(args: argparse.Namespace) -> bool:
     return bool(
-        args.files or args.files_from or args.staged or args.working or args.base or args.local
+        args.files
+        or args.files_from
+        or args.pr is not None
+        or args.staged
+        or args.working
+        or args.base
+        or args.local
     )
 
 
@@ -260,6 +290,53 @@ class Change:
     full_reasons: list[str] = field(default_factory=list)  # why everything must run anyway
 
 
+_PR_EXCLUDES = ("files", "files_from", "staged", "working", "base", "local")
+
+
+def _local_revisions(change: prs.PrChange) -> graph.Revisions | None:
+    """A pull request's commits as a git range, only when they reproduce the platform's file list.
+
+    The range is what lets a lockfile change be narrowed. A head that is not in the clone is
+    fetched from origin once. Anything that does not add up (a missing commit, a rename, another
+    file list) gives no range, so the lockfile is global again and more runs, never less.
+    """
+    if not (change.base_sha and change.head_sha):
+        return None
+    try:
+        if not gitutil.has_commit(change.head_sha) and not gitutil.fetch_pull_head(change.number):
+            return None
+        base = gitutil.resolve_base(change.base_sha, change.head_sha)
+        local = set(gitutil.changed_files(base, change.head_sha))
+    except gitutil.GitError:
+        return None
+    return graph.Revisions(base, change.head_sha) if local == set(change.files) else None
+
+
+def _pr_change(args: argparse.Namespace, titles: list[str], body: str, labels: list[str]) -> Change:
+    """Pull requests planned as CI would: their files, titles, bodies and labels.
+
+    Several pull requests are planned together (the union of their files). One of them also
+    carries its commits, so a lockfile change in it can be narrowed. An explicit --title or
+    --body replaces theirs and --label adds to theirs, as for every other source.
+    """
+    given = [f"--{name.replace('_', '-')}" for name in _PR_EXCLUDES if getattr(args, name)]
+    if given:
+        raise cfgmod.ConfigError(f"--pr reads what changed from the pull request: drop {given[0]}")
+    numbers = list(dict.fromkeys(args.pr)) or prs.choose(
+        args.pr_limit, current_branch=gitutil.current_branch()
+    )
+    changes = [prs.fetch(n) for n in numbers]
+    files = list(dict.fromkeys(f for c in changes for f in c.files))
+    pr_titles = titles or [c.title for c in changes]
+    pr_body = body or "\n\n".join(c.body for c in changes if c.body)
+    pr_labels = list(dict.fromkeys([*(name for c in changes for name in c.labels), *labels]))
+    states = {c.state.lower() for c in changes if c.state}
+    kind = f"{next(iter(states))} " if len(states) == 1 else ""
+    source = f"{kind}PR " + ", ".join(f"#{c.number}" for c in changes)
+    revisions = _local_revisions(changes[0]) if len(changes) == 1 else None
+    return Change(files, pr_titles, pr_body, False, source, revisions, pr_labels)
+
+
 def _change(args: argparse.Namespace, cfg: cfgmod.Config, need_diff: bool) -> Change:
     """The change described by the arguments.
 
@@ -269,6 +346,8 @@ def _change(args: argparse.Namespace, cfg: cfgmod.Config, need_diff: bool) -> Ch
     """
     titles, body = _titles_and_body(args)
     labels = _labels(args)
+    if args.pr is not None:
+        return _pr_change(args, titles, body, labels)
     files = _explicit_files(args)
     if files is not None:
         if args.files:
@@ -388,16 +467,51 @@ def _cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
-def _execute(plan: dict, *, dry_run: bool) -> int:
+def _repeats(plans: dict[int, dict]) -> dict[int, dict[str, int]]:
+    """For each tier, the suites an earlier tier of the same invocation already ran.
+
+    A suite repeats only when its id and its command line are both identical, so a test command
+    with other markers is different work and is never treated as a repeat.
+    """
+    seen: dict[tuple[str, str], int] = {}
+    repeated: dict[int, dict[str, int]] = {}
+    for number, plan in plans.items():
+        for suite in plan["suites"]:
+            key = (suite["id"], suite["command"])
+            if key in seen:
+                repeated.setdefault(number, {})[suite["id"]] = seen[key]
+            else:
+                seen[key] = number
+    return repeated
+
+
+def _execute(
+    plan: dict,
+    *,
+    dry_run: bool,
+    ran: dict[tuple[str, str], int] | None = None,
+    tier: int | None = None,
+) -> int:
+    """Run (or, with dry_run, only print) a plan's suites.
+
+    `ran` is shared by the tiers of one invocation: a suite with the same id and command that
+    already ran in an earlier tier is skipped, or, in a dry run, reported as one that would be.
+    """
     for suite in plan["suites"]:
-        print(f"\n== {suite['id']}: {suite['command']}", file=sys.stderr)
-        if dry_run:
+        key = (suite["id"], suite["command"])
+        if ran is not None and key in ran:
+            verb = "would skip" if dry_run else "skipped"
+            print(f"\n== {suite['id']}: {verb}, already ran in tier {ran[key]}", file=sys.stderr)
             continue
-        # The command comes from the repo's own pipeline.toml, the same trust as its justfile.
-        code = subprocess.run(suite["command"], shell=True, check=False).returncode  # noqa: S602
-        if code != 0:
-            print(f"picard: {suite['id']} failed with exit code {code}", file=sys.stderr)
-            return code
+        print(f"\n== {suite['id']}: {suite['command']}", file=sys.stderr)
+        if not dry_run:
+            # The command comes from the repo's own pipeline.toml, the same trust as its justfile.
+            code = subprocess.run(suite["command"], shell=True, check=False).returncode  # noqa: S602
+            if code != 0:
+                print(f"picard: {suite['id']} failed with exit code {code}", file=sys.stderr)
+                return code
+        if ran is not None and tier is not None:
+            ran[key] = tier
     return 0
 
 
@@ -464,7 +578,8 @@ def _tier_row(plan: dict, total: int) -> tuple[str, str, str, str]:
     )
 
 
-def _render_simulation(cfg, change, plans, impact, *, color, commands) -> str:
+def _render_simulation(cfg, change, plans, impact, *, color, commands, repeats=None) -> str:
+    repeats = repeats or {}
     files = change.files
     out = ["SIMULATION", ""]
     if change.source:
@@ -499,6 +614,10 @@ def _render_simulation(cfg, change, plans, impact, *, color, commands) -> str:
     out.append(header)
     for number, plan in plans.items():
         name, packages, markers, work = _tier_row(plan, len(cfg.packages))
+        again = len(repeats.get(number, {}))
+        if again:  # suites an earlier tier of this simulation already ran are not new work
+            total = len(plan["suites"])
+            work = work.replace(f"{total} suite(s)", f"{total} suite(s) ({total - again} new)", 1)
         out.append(f"  {number:<5}{name:<14}{packages:<56}{markers:<22}{work}")
     warnings = list(dict.fromkeys(w for plan in plans.values() for w in plan["warnings"]))
     out += [f"  ! {w}" for w in warnings]
@@ -507,7 +626,13 @@ def _render_simulation(cfg, change, plans, impact, *, color, commands) -> str:
             if plan["suites"]:
                 out += ["", f"tier {number} ({plan['name']}) commands:"]
                 width = max(28, *(len(s["id"]) + 2 for s in plan["suites"]))
-                out += [f"  {s['id']:<{width}}{s['command']}" for s in plan["suites"]]
+                again = repeats.get(number, {})
+                out += [
+                    f"  {s['id']:<{width}}skip, already ran in tier {again[s['id']]}: {s['command']}"
+                    if s["id"] in again
+                    else f"  {s['id']:<{width}}{s['command']}"
+                    for s in plan["suites"]
+                ]
     return "\n".join(out)
 
 
@@ -517,24 +642,32 @@ def _cmd_simulate(args: argparse.Namespace) -> int:
     change = _simulation_change(args, cfg)
     plans = {n: _plan(cfg, n, change) for n in tiers}
     impact = _impact_of(cfg, change)
+    repeats = _repeats(plans)
 
     if args.format == "json":
         data = {"source": change.source, "files": change.files, "titles": change.titles}
-        print(json.dumps({**data, "plans": plans}, indent=2))
+        print(json.dumps({**data, "plans": plans, "repeats": repeats}, indent=2))
     elif args.format == "mermaid":
         print(graph.render_mermaid(cfg, impact))
     else:
         print(
             _render_simulation(
-                cfg, change, plans, impact, color=_use_color(args), commands=args.commands
+                cfg,
+                change,
+                plans,
+                impact,
+                color=_use_color(args),
+                commands=args.commands,
+                repeats=repeats,
             )
         )
     if not args.run:
         return 0
+    ran: dict[tuple[str, str], int] = {}
     for number in tiers:
         plan = _plan(cfg, number, change, expand_shards=False)  # run each suite once, whole
         print(f"\n▶ tier {number} ({plan['name']})", file=sys.stderr)
-        code = _execute(plan, dry_run=False)
+        code = _execute(plan, dry_run=False, ran=ran, tier=number)
         if code != 0:
             return code
     return 0
@@ -677,6 +810,13 @@ def _cmd_validate(args: argparse.Namespace) -> int:
         f"ok: {len(cfg.packages)} package(s) ({sources}), {len(cfg.profiles)} profile(s), "
         f"tiers {sorted(cfg.tiers)}"
     )
+    if cfg.cycles_found:
+        shown = "; ".join(" -> ".join((*cycle, cycle[0])) for cycle in cfg.cycles_found)
+        print(
+            f"picard: note: {len(cfg.cycles_found)} dependency cycle(s) accepted by "
+            f'[graph] cycles = "allow": {shown}',
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -701,7 +841,7 @@ def _cmd_scaffold(args: argparse.Namespace) -> int:
             "picard: next: edit .picard/pipeline.toml and run `picard validate-config`, "
             "run `picard install-hooks`, then set the repository variables PICARD_REPOSITORY "
             "and PICARD_REF and the secret PICARD_TOKEN that the workflows use "
-            "(see docs/adoption.md in the picard repository)"
+            "(see docs/tutorial/07-ci-and-rollout.md in the picard repository)"
         )
     return 0
 
@@ -755,6 +895,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         graph.DiscoveryError,
         SetupError,
         ScaffoldError,
+        prs.PrError,
     ) as exc:
         print(f"picard: {exc}", file=sys.stderr)
         return 2

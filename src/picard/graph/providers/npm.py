@@ -10,7 +10,8 @@ from picard.graph.model import Discovered, DiscoveryError, checked
 from picard.graph.providers.base import GraphProvider
 
 _YAML_ITEM = re.compile(r"""^\s*-\s*['"]?([^'"#]+?)['"]?\s*(?:#.*)?$""")
-_DEPENDENCY_FIELDS = ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
+_RUNTIME_FIELDS = ("dependencies", "peerDependencies", "optionalDependencies")
+_DEV_FIELDS = ("devDependencies",)
 
 
 def _workspace_patterns(root: Path) -> list[str]:
@@ -51,10 +52,20 @@ class NpmProvider(GraphProvider):
                 manifests[data["name"]] = (directory.relative_to(root).as_posix(), data)
         found = []
         for name, (path, data) in manifests.items():
-            deps: set[str] = set()
-            for key in _DEPENDENCY_FIELDS:
-                deps.update(data.get(key, {}))
+            runtime: set[str] = set()
+            for key in _RUNTIME_FIELDS:
+                runtime.update(data.get(key, {}))
+            dev: set[str] = set()
+            for key in _DEV_FIELDS:
+                dev.update(data.get(key, {}))
+            others = set(manifests) - {name}
             found.append(
-                Discovered(name, path, tuple(sorted(deps & set(manifests) - {name})), self.name)
+                Discovered(
+                    name,
+                    path,
+                    tuple(sorted((runtime | dev) & others)),
+                    self.name,
+                    tuple(sorted((dev - runtime) & others)),
+                )
             )
         return checked(found)

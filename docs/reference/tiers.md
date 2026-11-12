@@ -3,9 +3,9 @@
 A tier is a moment in a change's life with its own cost and confidence budget. Each one is a
 `[tiers.N]` table in `pipeline.toml`, so the table below is configuration, not code.
 
-picard is an [affected-based](concepts.md) pipeline, and the tiers are where that narrows and
+picard is an [affected-based](../dev/concepts.md) pipeline, and the tiers are where that narrows and
 widens. Tiers 0 to 2 are **incremental**: they run the packages the change affects (`affected`,
-`baseline`), found with the [dependency graph and impact engine](architecture.md#impact-and-engines).
+`baseline`), found with the [dependency graph and impact engine](../dev/architecture.md#impact-and-engines).
 Tiers 3 and 4 run **everything** and ignore the diff, as the safety net for what an incremental
 run can miss.
 
@@ -28,6 +28,10 @@ Fields:
 - **markers**: substituted into `{markers}` in package commands. For pytest that is
   `-m "{markers}"`. An empty value means no filter.
 - **run**: which names from a package's `[packages.commands]` execute at this tier.
+
+Rule actions follow the tiers differently from package suites: `run:` actions honour their
+own `tiers`, while `own`, `package` and `full` select packages and so follow the tier's `run`
+list and the profile. See [rules](rules.md#which-tiers-an-action-honours).
 
 ## Tier 0 · Pre-push
 

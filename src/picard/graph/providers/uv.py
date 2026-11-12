@@ -9,12 +9,19 @@ from picard.graph.model import Discovered, DiscoveryError, checked
 from picard.graph.providers.base import GraphProvider
 
 
-def _dependency_names(package: dict) -> set[str]:
-    names = {d["name"] for d in package.get("dependencies", [])}
-    for key in ("optional-dependencies", "dev-dependencies"):
-        for group in package.get(key, {}).values():
-            names.update(d["name"] for d in group)
-    return names
+def _dependency_names(package: dict) -> tuple[set[str], set[str]]:
+    """(what the package needs to run, what only its dev groups name).
+
+    Extras are optional runtime dependencies, so they count as runtime. A name in a dev group and
+    also in a runtime table is a runtime edge.
+    """
+    runtime = {d["name"] for d in package.get("dependencies", [])}
+    for group in package.get("optional-dependencies", {}).values():
+        runtime.update(d["name"] for d in group)
+    dev: set[str] = set()
+    for group in package.get("dev-dependencies", {}).values():
+        dev.update(d["name"] for d in group)
+    return runtime, dev - runtime
 
 
 class UvProvider(GraphProvider):
@@ -40,6 +47,9 @@ class UvProvider(GraphProvider):
         for package in data.get("package", []):
             name = package["name"]
             if name in paths:
-                deps = sorted(_dependency_names(package) & set(paths) - {name})
-                found.append(Discovered(name, paths[name], tuple(deps), self.name))
+                runtime, dev_only = _dependency_names(package)
+                others = set(paths) - {name}
+                deps = sorted((runtime | dev_only) & others)
+                dev = sorted(dev_only & others)
+                found.append(Discovered(name, paths[name], tuple(deps), self.name, tuple(dev)))
         return checked(found)
